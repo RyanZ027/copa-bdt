@@ -46,12 +46,16 @@ const firebaseConfig = {
   messagingSenderId: "584136834041",
   appId: "1:584136834041:web:ebe04af91654e1bbfe9b28"
 };
-
-    // Inicializa o Firebase
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
+    // Inicializa o Firebase com proteção anti-crash
+    let db = null;
+    try {
+      if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+      }
+      db = firebase.firestore();
+    } catch (e) {
+      console.warn("Erro ao iniciar Firebase (Modo Offline ativado).", e);
     }
-    const db = firebase.firestore();
     // =========================================================================
 
     const INITIAL_SEASONS = [
@@ -74,11 +78,11 @@ const firebaseConfig = {
 
     function App() {
       const [dataLoaded, setDataLoaded] = useState(false);
-      const [syncStatus, setSyncStatus] = useState('saved'); // 'saving', 'saved', 'error'
+      const [syncStatus, setSyncStatus] = useState('saved'); // 'saving', 'saved', 'error', 'offline'
 
       const [activeTab, setActiveTab] = useState('ranking'); 
       const [isOrganizer, setIsOrganizer] = useState(false);
-      const isOrgRef = useRef(isOrganizer); // Referência para ignorar atualizações de nuvem se formos nós a editar
+      const isOrgRef = useRef(isOrganizer); 
       
       const [showLoginModal, setShowLoginModal] = useState(false);
       const [passwordInput, setPasswordInput] = useState('');
@@ -112,17 +116,25 @@ const firebaseConfig = {
       const [playoffs, setPlayoffs] = useState(null);
       const [rankingUpdated, setRankingUpdated] = useState(false);
 
-      // --- EFEITOS DO FIREBASE (NUVEM) ---
-      
       // Atualiza a referência de organizador
       useEffect(() => { isOrgRef.current = isOrganizer; }, [isOrganizer]);
 
-      // 1. CARREGAR E OUVIR EM TEMPO REAL DA NUVEM
+      // 1. CARREGAR E OUVIR EM TEMPO REAL DA NUVEM (Com Timeout de Segurança)
       useEffect(() => {
+        // Se a cloud demorar mais de 2 segundos, força a entrada no site (Impede ficar preso a carregar)
+        const fallbackTimer = setTimeout(() => {
+          setDataLoaded(true);
+        }, 2000);
+
+        if (!db) {
+          setDataLoaded(true);
+          setSyncStatus('offline');
+          return;
+        }
+
         const unsubscribe = db.collection('bdt_database').doc('main_state').onSnapshot((doc) => {
           if (doc.exists) {
-            // Se eu sou o organizador e estou ativamente editando, não quero que a nuvem subscreva meu estado local e cause glitches.
-            if (isOrgRef.current) return;
+            if (isOrgRef.current) return; // Ignora leitura se sou o organizador para não causar glitches
 
             const data = doc.data();
             if (data.pastSeasons) setPastSeasons(data.pastSeasons);
@@ -138,43 +150,48 @@ const firebaseConfig = {
             if (data.currentRoundIndex !== undefined) setCurrentRoundIndex(data.currentRoundIndex);
             if (data.playoffs !== undefined) setPlayoffs(data.playoffs);
             if (data.rankingUpdated !== undefined) setRankingUpdated(data.rankingUpdated);
-          } else {
-            // Se o banco estiver vazio (primeira vez a rodar), salva os INITIAL_STATES lá.
-            if (isOrgRef.current) {
-               // ... faria o save, mas como não é organizador ainda ao carregar, apenas esperamos.
-            }
           }
           setDataLoaded(true);
+          clearTimeout(fallbackTimer);
         }, (error) => {
-          console.error("Erro ao ler dados da nuvem:", error);
-          if(error.message.includes("Missing or insufficient permissions") && firebaseConfig.apiKey.includes("COLE_AQUI")) {
-             setAlertMessage("Por favor, cole as credenciais do Firebase no código-fonte!");
-          }
+          console.warn("Erro ao ler dados:", error);
           setDataLoaded(true);
+          setSyncStatus('offline');
+          clearTimeout(fallbackTimer);
         });
 
-        return () => unsubscribe();
+        return () => {
+          clearTimeout(fallbackTimer);
+          if (unsubscribe) unsubscribe();
+        };
       }, []);
 
-      // 2. AUTO-SALVAR (Apenas para o Organizador)
+      // 2. AUTO-SALVAR (À prova de Crash / Tela Preta)
       useEffect(() => {
-        if (!isOrganizer || !dataLoaded) return;
+        if (!isOrganizer || !dataLoaded || !db) return;
         
         setSyncStatus('saving');
         const timer = setTimeout(() => {
-          const stateToSave = {
-            pastSeasons, globalRanking, phase, seasonName, tournamentMode,
-            tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated,
-            lastUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
-          };
+          try {
+            // O JSON.parse(JSON.stringify) limpa valores 'undefined' mágicos que fazem o Firebase crashar a app!
+            const cleanState = JSON.parse(JSON.stringify({
+              pastSeasons, globalRanking, phase, seasonName, tournamentMode,
+              tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated
+            }));
+            
+            cleanState.lastUpdatedAt = firebase.firestore.FieldValue.serverTimestamp();
 
-          db.collection('bdt_database').doc('main_state').set(stateToSave, { merge: true })
-            .then(() => setSyncStatus('saved'))
-            .catch(err => {
-              console.error("Erro ao salvar:", err);
-              setSyncStatus('error');
-            });
-        }, 1500); // Aguarda 1.5s após o organizador parar de mexer para salvar
+            db.collection('bdt_database').doc('main_state').set(cleanState, { merge: true })
+              .then(() => setSyncStatus('saved'))
+              .catch(err => {
+                console.warn("Erro ao salvar silenciosamente:", err);
+                setSyncStatus('error');
+              });
+          } catch (e) {
+            console.error("Erro no AutoSave interno:", e);
+            setSyncStatus('error');
+          }
+        }, 1500);
 
         return () => clearTimeout(timer);
       }, [isOrganizer, dataLoaded, pastSeasons, globalRanking, phase, seasonName, tournamentMode, tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated]);
@@ -190,9 +207,9 @@ const firebaseConfig = {
           const countsA = {};
           const countsB = {};
           pastSeasons.forEach(season => {
-            const pA = season.placements?.find(p => p.name.toLowerCase() === a.name.toLowerCase())?.pos;
+            const pA = season.placements?.find(p => p?.name?.toLowerCase() === a?.name?.toLowerCase())?.pos;
             if (pA) countsA[pA] = (countsA[pA] || 0) + 1;
-            const pB = season.placements?.find(p => p.name.toLowerCase() === b.name.toLowerCase())?.pos;
+            const pB = season.placements?.find(p => p?.name?.toLowerCase() === b?.name?.toLowerCase())?.pos;
             if (pB) countsB[pB] = (countsB[pB] || 0) + 1;
           });
 
@@ -205,11 +222,44 @@ const firebaseConfig = {
             }
           }
           if (tiebreaker !== 0) return tiebreaker;
-          return a.name.localeCompare(b.name);
+          return a?.name?.localeCompare(b?.name) || 0;
         });
       }, [globalRanking, pastSeasons]);
 
       // --- FUNÇÕES DE SISTEMA ---
+      const handleExportData = () => {
+        const data = { globalRanking, pastSeasons, phase, seasonName, tournamentMode, tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated };
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data));
+        const downloadAnchorNode = document.createElement('a');
+        downloadAnchorNode.setAttribute("href", dataStr);
+        downloadAnchorNode.setAttribute("download", "copa_bdt_backup.json");
+        document.body.appendChild(downloadAnchorNode);
+        downloadAnchorNode.click();
+        downloadAnchorNode.remove();
+      };
+
+      const handleImportData = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const jsonData = JSON.parse(event.target.result);
+            if (jsonData.globalRanking && jsonData.pastSeasons) {
+              setGlobalRanking(jsonData.globalRanking); setPastSeasons(jsonData.pastSeasons);
+              if (jsonData.phase) setPhase(jsonData.phase);
+              if (jsonData.teams) setTeams(jsonData.teams);
+              if (jsonData.rounds) setRounds(jsonData.rounds);
+              if (jsonData.playoffs !== undefined) setPlayoffs(jsonData.playoffs);
+              if (jsonData.currentRoundIndex !== undefined) setCurrentRoundIndex(jsonData.currentRoundIndex);
+              setAlertMessage('Backup carregado com sucesso!');
+            }
+          } catch (err) { setAlertMessage('Erro ao ler o ficheiro.'); }
+        };
+        reader.readAsText(file);
+        e.target.value = null; 
+      };
+
       const handleClearRanking = () => setShowClearModal(true);
       const handleResetToDefault = () => setShowResetDefaultModal(true);
       const confirmClearRanking = () => { setGlobalRanking([]); setPastSeasons([]); setShowClearModal(false); };
@@ -266,11 +316,11 @@ const firebaseConfig = {
           }
         });
 
-        rounds.forEach(round => {
-          round.matches.forEach(match => {
-            if (match.isBye && stats[match.team1]) {
+        rounds?.forEach(round => {
+          round?.matches?.forEach(match => {
+            if (match?.isBye && stats[match.team1]) {
               stats[match.team1].pts += 3; stats[match.team1].wins += 1; stats[match.team1].gf += 1; stats[match.team1].gd += 1; stats[match.team1].byes += 1; stats[match.team1].matchesPlayed += 1;
-            } else if (match.score1 !== '' && match.score2 !== '' && stats[match.team1] && stats[match.team2]) {
+            } else if (match?.score1 !== '' && match?.score2 !== '' && stats[match?.team1] && stats[match?.team2]) {
               const s1 = parseInt(match.score1, 10); const s2 = parseInt(match.score2, 10);
               stats[match.team1].opponents.push(match.team2); stats[match.team2].opponents.push(match.team1);
               stats[match.team1].matchesPlayed += 1; stats[match.team2].matchesPlayed += 1;
@@ -294,8 +344,8 @@ const firebaseConfig = {
       };
 
       const standings = useMemo(() => calculateStandings(), [teams, rounds]);
-      const standingsA = useMemo(() => calculateStandings(groups.A), [teams, rounds, groups.A]);
-      const standingsB = useMemo(() => calculateStandings(groups.B), [teams, rounds, groups.B]);
+      const standingsA = useMemo(() => calculateStandings(groups?.A), [teams, rounds, groups?.A]);
+      const standingsB = useMemo(() => calculateStandings(groups?.B), [teams, rounds, groups?.B]);
 
       const getSeededTeams = (teamsArray) => {
         return [...teamsArray].sort((a, b) => {
@@ -401,13 +451,15 @@ const firebaseConfig = {
         const v = val === '' ? '' : parseInt(val, 10);
         if (val !== '' && isNaN(v)) return;
         const newRounds = [...rounds];
-        newRounds[rIdx].matches[mIdx][field] = v;
-        setRounds(newRounds);
+        if(newRounds[rIdx] && newRounds[rIdx].matches[mIdx]) {
+           newRounds[rIdx].matches[mIdx][field] = v;
+           setRounds(newRounds);
+        }
       };
 
       const isCurrentRoundFinished = () => {
-        if (rounds.length === 0) return false;
-        return rounds[currentRoundIndex].matches.every(m => m.isBye || (m.score1 !== '' && m.score2 !== ''));
+        if (!rounds || rounds.length === 0 || !rounds[currentRoundIndex]) return false;
+        return rounds[currentRoundIndex].matches?.every(m => m.isBye || (m.score1 !== '' && m.score2 !== ''));
       };
 
       const advanceRound = () => {
@@ -427,8 +479,8 @@ const firebaseConfig = {
           setPlayoffs({
             stage: 'playin',
             playins: [
-              { team1: standings[2].id, team2: standings[5].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
-              { team1: standings[3].id, team2: standings[4].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} } 
+              { team1: standings[2]?.id, team2: standings[5]?.id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standings[3]?.id, team2: standings[4]?.id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} } 
             ],
             semifinals: [], final: null, thirdPlace: null
           });
@@ -436,8 +488,8 @@ const firebaseConfig = {
           setPlayoffs({
             stage: 'semifinals',
             semifinals: [
-              { team1: standingsA[0].id, team2: standingsB[1].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
-              { team1: standingsB[0].id, team2: standingsA[1].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+              { team1: standingsA[0]?.id, team2: standingsB[1]?.id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standingsB[0]?.id, team2: standingsA[1]?.id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
             ],
             final: null, thirdPlace: null
           });
@@ -445,8 +497,8 @@ const firebaseConfig = {
           setPlayoffs({
             stage: 'semifinals',
             semifinals: [
-              { team1: standings[0].id, team2: standings[3].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
-              { team1: standings[1].id, team2: standings[2].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+              { team1: standings[0]?.id, team2: standings[3]?.id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standings[1]?.id, team2: standings[2]?.id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
             ],
             final: null, thirdPlace: null
           });
@@ -457,6 +509,8 @@ const firebaseConfig = {
       const getMatchupStatus = (match) => {
         if (!match) return { isFinished: false, winner: null, loser: null, isTied: false, agg1: 0, agg2: 0 };
         const { leg1, leg2, pen } = match;
+        if (!leg1) return { isFinished: false, winner: null, loser: null, isTied: false, agg1: 0, agg2: 0 };
+        
         const isSingleLeg = !leg2; 
 
         if (leg1.s1 === '' || leg1.s2 === '') return { isFinished: false };
@@ -468,7 +522,7 @@ const firebaseConfig = {
         if (agg1 > agg2) return { isFinished: true, winner: match.team1, loser: match.team2, isTied: false, agg1, agg2 };
         if (agg2 > agg1) return { isFinished: true, winner: match.team2, loser: match.team1, isTied: false, agg1, agg2 };
 
-        if (pen.s1 === '' || pen.s2 === '') return { isFinished: false, isTied: true, agg1, agg2 };
+        if (!pen || pen.s1 === '' || pen.s2 === '') return { isFinished: false, isTied: true, agg1, agg2 };
         if (pen.s1 > pen.s2) return { isFinished: true, winner: match.team1, loser: match.team2, isTied: true, agg1, agg2 };
         if (pen.s2 > pen.s1) return { isFinished: true, winner: match.team2, loser: match.team1, isTied: true, agg1, agg2 };
 
@@ -476,32 +530,38 @@ const firebaseConfig = {
       };
 
       const handlePlayoffScore = (mType, idx, leg, field, val) => {
-        if (!isOrganizer) return;
+        if (!isOrganizer || !playoffs) return;
         const v = val === '' ? '' : parseInt(val, 10);
         if (val !== '' && isNaN(v)) return;
         setPlayoffs(prev => {
+          if(!prev) return prev;
           const s = { ...prev };
-          if (mType === 'final' || mType === 'thirdPlace') s[mType][leg][field] = v;
-          else s[mType][idx][leg][field] = v;
+          if (mType === 'final' || mType === 'thirdPlace') {
+              if (s[mType] && s[mType][leg]) s[mType][leg][field] = v;
+          } else {
+              if (s[mType] && s[mType][idx] && s[mType][idx][leg]) s[mType][idx][leg][field] = v;
+          }
           return s;
         });
       };
 
       const advanceToSemis = () => {
+        if(!playoffs?.playins) return;
         const p1 = getMatchupStatus(playoffs.playins[0]);
         const p2 = getMatchupStatus(playoffs.playins[1]);
         if (p1.isFinished && p2.isFinished) {
           setPlayoffs(prev => ({
             ...prev, stage: 'semifinals',
             semifinals: [
-              { team1: standings[0].id, team2: p2.winner, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
-              { team1: standings[1].id, team2: p1.winner, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+              { team1: standings[0]?.id, team2: p2.winner, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standings[1]?.id, team2: p1.winner, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
             ]
           }));
         }
       };
 
       const advanceToFinal = () => {
+        if(!playoffs?.semifinals) return;
         const s1 = getMatchupStatus(playoffs.semifinals[0]);
         const s2 = getMatchupStatus(playoffs.semifinals[1]);
         if (s1.isFinished && s2.isFinished) {
@@ -521,13 +581,13 @@ const firebaseConfig = {
       const finishTournament = () => {
         if (rankingUpdated) return;
         
-        const firstId = getMatchupStatus(playoffs.final).winner;
-        const secondId = getMatchupStatus(playoffs.final).loser;
-        const thirdId = getMatchupStatus(playoffs.thirdPlace).winner;
-        const fourthId = getMatchupStatus(playoffs.thirdPlace).loser;
+        const firstId = getMatchupStatus(playoffs?.final).winner;
+        const secondId = getMatchupStatus(playoffs?.final).loser;
+        const thirdId = getMatchupStatus(playoffs?.thirdPlace).winner;
+        const fourthId = getMatchupStatus(playoffs?.thirdPlace).loser;
 
-        const first = getTeamInfo(firstId)?.playerName.trim();
-        const top4Names = [getTeamInfo(firstId), getTeamInfo(secondId), getTeamInfo(thirdId), getTeamInfo(fourthId)].filter(Boolean).map(t=>t.playerName.trim());
+        const first = getTeamInfo(firstId)?.playerName?.trim() || 'Desconhecido';
+        const top4Names = [getTeamInfo(firstId), getTeamInfo(secondId), getTeamInfo(thirdId), getTeamInfo(fourthId)].filter(Boolean).map(t=>t?.playerName?.trim() || 'Desconhecido');
         
         let allPlacements = [];
         top4Names.forEach((n, i) => allPlacements.push({pos: i+1, name: n}));
@@ -535,9 +595,9 @@ const firebaseConfig = {
         let allOtherTeams = [];
         if (tournamentFormat === '8_teams') {
            const merged = [...standingsA, ...standingsB].sort((a,b) => b.pts - a.pts || b.wins - a.wins || b.gd - a.gd || b.gf - a.gf);
-           allOtherTeams = merged.map(t => t.playerName.trim()).filter(n => !top4Names.includes(n));
+           allOtherTeams = merged.map(t => t?.playerName?.trim()).filter(n => n && !top4Names.includes(n));
         } else {
-           allOtherTeams = standings.map(t => t.playerName.trim()).filter(n => !top4Names.includes(n));
+           allOtherTeams = standings.map(t => t?.playerName?.trim()).filter(n => n && !top4Names.includes(n));
         }
         
         allOtherTeams.forEach((n, i) => allPlacements.push({pos: top4Names.length + i + 1, name: n}));
@@ -551,7 +611,7 @@ const firebaseConfig = {
              if(p.pos === 1) pts = 10; else if(p.pos === 2) pts = 5; else if(p.pos === 3) pts = 3; else if(p.pos === 4) pts = 2;
            }
            
-           const idx = newRanking.findIndex(r => r.name.toLowerCase() === p.name.toLowerCase());
+           const idx = newRanking.findIndex(r => r?.name?.toLowerCase() === p?.name?.toLowerCase());
            if(idx >= 0) {
              newRanking[idx].pts += pts;
              if(p.pos === 1) newRanking[idx].titles += 1;
@@ -575,9 +635,9 @@ const firebaseConfig = {
            let tiebreaker = 0;
            const countsA = {}; const countsB = {};
            allSeasons.forEach(season => {
-             const pA = season.placements?.find(p => p.name.toLowerCase() === a.name.toLowerCase())?.pos;
+             const pA = season.placements?.find(p => p?.name?.toLowerCase() === a?.name?.toLowerCase())?.pos;
              if (pA) countsA[pA] = (countsA[pA] || 0) + 1;
-             const pB = season.placements?.find(p => p.name.toLowerCase() === b.name.toLowerCase())?.pos;
+             const pB = season.placements?.find(p => p?.name?.toLowerCase() === b?.name?.toLowerCase())?.pos;
              if (pB) countsB[pB] = (countsB[pB] || 0) + 1;
            });
 
@@ -586,7 +646,7 @@ const firebaseConfig = {
              if (cA !== cB) { tiebreaker = cB - cA; break; }
            }
            if (tiebreaker !== 0) return tiebreaker;
-           return a.name.localeCompare(b.name);
+           return a?.name?.localeCompare(b?.name) || 0;
         });
         
         setGlobalRanking(newRanking); setPastSeasons(allSeasons); setRankingUpdated(true); setPhase('finished');
@@ -606,8 +666,10 @@ const firebaseConfig = {
       
       const handleTeamDataChange = (index, field, value) => {
         const newTeams = [...teams];
-        newTeams[index][field] = value;
-        setTeams(newTeams);
+        if (newTeams[index]) {
+            newTeams[index][field] = value;
+            setTeams(newTeams);
+        }
       };
 
       // --- SUB-COMPONENTES DE INTERFACE ---
@@ -615,7 +677,7 @@ const firebaseConfig = {
       
       const TeamDisplay = ({ id, align = 'left', dark = false }) => {
         const info = getTeamInfo(id);
-        if (!info) return <span className="text-stone-400">Desconhecido</span>;
+        if (!info) return <span className="text-stone-500 font-bold">Aguardando...</span>;
         return (
           <div className={`flex flex-col ${align === 'right' ? 'items-end text-right' : align === 'center' ? 'items-center text-center' : 'items-start text-left'}`}>
             <span className={`font-bold leading-tight ${dark ? 'text-yellow-50' : 'text-stone-200'}`}>{info.playerName}</span>
@@ -627,6 +689,7 @@ const firebaseConfig = {
       };
 
       const PastTeamDisplay = ({ id, pastTeams, align = 'left' }) => {
+        if(!pastTeams) return <span className="text-stone-500">Desconhecido</span>;
         const info = pastTeams.find(t => t.id === id);
         if (!info) return <span className="text-stone-500">Desconhecido</span>;
         return (
@@ -643,13 +706,13 @@ const firebaseConfig = {
           <div className="mb-4 bg-[#121212] border border-stone-800 rounded-xl p-4">
             <h4 className="text-xs font-bold text-stone-500 uppercase tracking-widest mb-3 border-b border-stone-800 pb-2">{title}</h4>
             <div className="flex items-center justify-between gap-2">
-               <div className="flex-1"><PastTeamDisplay id={matchObj.team1} pastTeams={pastTeams} align="right"/></div>
+               <div className="flex-1"><PastTeamDisplay id={matchObj?.team1} pastTeams={pastTeams} align="right"/></div>
                <div className="flex flex-col items-center gap-1 bg-[#050505] p-2 rounded-lg border border-stone-800 min-w-[80px]">
-                  {matchObj.leg1 && <div className="text-xs font-bold text-stone-300">IDA: <span className="text-white">{matchObj.leg1.s1} x {matchObj.leg1.s2}</span></div>}
-                  {matchObj.leg2 && <div className="text-xs font-bold text-stone-300">VOLTA: <span className="text-white">{matchObj.leg2.s1} x {matchObj.leg2.s2}</span></div>}
-                  {matchObj.pen?.s1 !== '' && matchObj.pen?.s1 !== undefined && <div className="text-[10px] font-bold text-yellow-600 mt-1 bg-yellow-900/20 px-2 rounded border border-yellow-700/30">PÊN: {matchObj.pen.s1} x {matchObj.pen.s2}</div>}
+                  {matchObj?.leg1 && <div className="text-xs font-bold text-stone-300">IDA: <span className="text-white">{matchObj.leg1.s1} x {matchObj.leg1.s2}</span></div>}
+                  {matchObj?.leg2 && <div className="text-xs font-bold text-stone-300">VOLTA: <span className="text-white">{matchObj.leg2.s1} x {matchObj.leg2.s2}</span></div>}
+                  {matchObj?.pen?.s1 !== '' && matchObj?.pen?.s1 !== undefined && <div className="text-[10px] font-bold text-yellow-600 mt-1 bg-yellow-900/20 px-2 rounded border border-yellow-700/30">PÊN: {matchObj.pen.s1} x {matchObj.pen.s2}</div>}
                </div>
-               <div className="flex-1"><PastTeamDisplay id={matchObj.team2} pastTeams={pastTeams} align="left"/></div>
+               <div className="flex-1"><PastTeamDisplay id={matchObj?.team2} pastTeams={pastTeams} align="left"/></div>
             </div>
           </div>
         );
@@ -682,18 +745,18 @@ const firebaseConfig = {
                   }
 
                   return (
-                    <tr key={team.id} className={`border-b border-stone-800/50 hover:bg-[#121212] transition-colors ${rowClass}`}>
+                    <tr key={team?.id || idx} className={`border-b border-stone-800/50 hover:bg-[#121212] transition-colors ${rowClass}`}>
                       <td className="px-2 py-3 font-medium"><span className={`w-5 h-5 rounded flex items-center justify-center font-black ${badgeClass}`}>{idx + 1}</span></td>
                       <td className="px-2 py-2">
-                        <div className="font-bold text-stone-200 truncate max-w-[100px] sm:max-w-[120px]">{team.playerName}</div>
-                        <div className="text-[10px] text-stone-500 truncate max-w-[100px] sm:max-w-[120px]">{team.teamName}</div>
+                        <div className="font-bold text-stone-200 truncate max-w-[100px] sm:max-w-[120px]">{team?.playerName}</div>
+                        <div className="text-[10px] text-stone-500 truncate max-w-[100px] sm:max-w-[120px]">{team?.teamName}</div>
                       </td>
-                      <td className="px-2 py-3 text-center font-black text-yellow-500 text-sm">{team.pts}</td>
-                      <td className="px-2 py-3 text-center text-stone-600 hidden sm:table-cell">{team.matchesPlayed}</td>
-                      <td className="px-2 py-3 text-center text-emerald-500 font-semibold">{team.wins}</td>
-                      <td className="px-2 py-3 text-center text-stone-600 hidden sm:table-cell">{team.draws}</td>
-                      <td className="px-2 py-3 text-center text-red-600 hidden sm:table-cell">{team.losses}</td>
-                      <td className="px-2 py-3 text-center font-semibold text-stone-400">{team.gd > 0 ? `+${team.gd}` : team.gd}</td>
+                      <td className="px-2 py-3 text-center font-black text-yellow-500 text-sm">{team?.pts}</td>
+                      <td className="px-2 py-3 text-center text-stone-600 hidden sm:table-cell">{team?.matchesPlayed}</td>
+                      <td className="px-2 py-3 text-center text-emerald-500 font-semibold">{team?.wins}</td>
+                      <td className="px-2 py-3 text-center text-stone-600 hidden sm:table-cell">{team?.draws}</td>
+                      <td className="px-2 py-3 text-center text-red-600 hidden sm:table-cell">{team?.losses}</td>
+                      <td className="px-2 py-3 text-center font-semibold text-stone-400">{team?.gd > 0 ? `+${team.gd}` : team?.gd}</td>
                     </tr>
                   )
                 })}
@@ -755,7 +818,7 @@ const firebaseConfig = {
                 <div className="flex justify-end gap-3">
                   <button onClick={() => setShowLoginModal(false)} className="px-5 py-2.5 rounded-xl font-bold bg-stone-800 text-stone-300 hover:bg-stone-700 border border-stone-700">Cancelar</button>
                   <button onClick={() => {
-                    if(passwordInput.toLowerCase() === 'cpr') { setIsOrganizer(true); setShowLoginModal(false); setPasswordInput(''); setAlertMessage('Acesso concedido! Suas alterações serão salvas na nuvem automaticamente.'); }
+                    if(passwordInput.toLowerCase() === 'cpr') { setIsOrganizer(true); setShowLoginModal(false); setPasswordInput(''); setAlertMessage('Acesso concedido! O progresso será guardado automaticamente (caso a Nuvem esteja ativa).'); }
                     else { setAlertMessage('Palavra-passe incorreta!'); }
                   }} className="px-5 py-2.5 rounded-xl font-bold bg-yellow-600 text-black hover:bg-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.4)]">Entrar</button>
                 </div>
@@ -781,7 +844,7 @@ const firebaseConfig = {
                       <div key={rIdx} className="bg-[#121212] rounded-xl p-4 border border-stone-800">
                         <h4 className="text-xs font-bold text-stone-500 uppercase mb-3">Rodada {rIdx + 1}</h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {round.matches.map((m, mIdx) => (
+                          {round.matches?.map((m, mIdx) => (
                             <div key={mIdx} className={`p-3 rounded-lg border ${m.isBye ? 'bg-yellow-900/10 border-yellow-900/30' : 'bg-[#050505] border-stone-800'} flex items-center justify-between`}>
                               {m.isBye ? (
                                 <>
@@ -841,8 +904,8 @@ const firebaseConfig = {
             <button onClick={() => setShowLoginModal(true)} className="absolute top-0 right-4 md:right-0 text-stone-600 hover:text-yellow-500 transition-colors" title="Acesso Organizador"><i className="fa-solid fa-lock"></i></button>
           ) : (
             <div className="absolute top-0 right-4 md:right-0 flex items-center gap-4">
-              <span className={`text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 ${syncStatus === 'saving' ? 'text-blue-400' : syncStatus === 'saved' ? 'text-emerald-500' : 'text-red-500'}`}>
-                {syncStatus === 'saving' ? <><i className="fa-solid fa-cloud-arrow-up animate-pulse"></i> Salvando...</> : syncStatus === 'saved' ? <><i className="fa-solid fa-cloud-check"></i> Na Nuvem</> : <><i className="fa-solid fa-cloud-xmark"></i> Erro Sync</>}
+              <span className={`text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 ${syncStatus === 'saving' ? 'text-blue-400' : syncStatus === 'saved' ? 'text-emerald-500' : syncStatus === 'offline' ? 'text-stone-500' : 'text-red-500'}`}>
+                {syncStatus === 'saving' ? <><i className="fa-solid fa-cloud-arrow-up animate-pulse"></i> Guardando...</> : syncStatus === 'saved' ? <><i className="fa-solid fa-cloud-check"></i> Na Nuvem</> : syncStatus === 'offline' ? <><i className="fa-solid fa-hard-drive"></i> Offline</> : <><i className="fa-solid fa-cloud-xmark"></i> Erro Sync</>}
               </span>
               <button onClick={() => {setIsOrganizer(false); setAlertMessage('Sessão encerrada.');}} className="text-yellow-500 hover:text-red-500 transition-colors" title="Sair do Modo Organizador"><i className="fa-solid fa-unlock"></i></button>
             </div>
@@ -872,17 +935,17 @@ const firebaseConfig = {
       const renderStatistics = () => {
         const allPlayersSet = new Set();
         pastSeasons.forEach(s => {
-          if (s.placements) s.placements.forEach(p => allPlayersSet.add(p.name));
+          if (s.placements) s.placements.forEach(p => p?.name && allPlayersSet.add(p.name));
         });
         
         const allPlayersList = Array.from(allPlayersSet).sort((a, b) => {
-          const ptsA = sortedGlobalRanking.find(r => r.name === a)?.pts || 0;
-          const ptsB = sortedGlobalRanking.find(r => r.name === b)?.pts || 0;
+          const ptsA = sortedGlobalRanking.find(r => r?.name === a)?.pts || 0;
+          const ptsB = sortedGlobalRanking.find(r => r?.name === b)?.pts || 0;
           return ptsB - ptsA;
         });
 
         const chartColors = ['#facc15', '#60a5fa', '#f43f5e', '#34d399', '#a78bfa', '#fb923c', '#2dd4bf', '#f472b6', '#94a3b8', '#c084fc'];
-        const maxPointsOverall = Math.max(...allPlayersList.map(p => sortedGlobalRanking.find(r => r.name === p)?.pts || 10), 10);
+        const maxPointsOverall = Math.max(...allPlayersList.map(p => sortedGlobalRanking.find(r => r?.name === p)?.pts || 10), 10);
         const numSeasons = pastSeasons.length;
 
         const getX = (index) => {
@@ -893,7 +956,7 @@ const firebaseConfig = {
         const getPointsHistory = (playerName) => {
           let cumulative = 0;
           return pastSeasons.map(s => {
-             const pl = s.placements?.find(x => x.name === playerName);
+             const pl = s.placements?.find(x => x?.name === playerName);
              if (pl) {
                 const mode = s.tournamentData?.mode || 'clubes';
                 let addedPts = mode === 'selecoes' ? 2 : 1; 
@@ -923,7 +986,7 @@ const firebaseConfig = {
                       {pastSeasons.map((s, i) => (
                         <g key={`grid-${i}`}>
                           <line x1={getX(i)} y1={0} x2={getX(i)} y2={300} stroke="#1c1917" strokeWidth="2" strokeDasharray="4 4" />
-                          <text x={getX(i)} y={335} fill="#78716c" fontSize="14" textAnchor="middle" fontWeight="bold" className="uppercase tracking-widest">{s.name}</text>
+                          <text x={getX(i)} y={335} fill="#78716c" fontSize="14" textAnchor="middle" fontWeight="bold" className="uppercase tracking-widest">{s?.name}</text>
                         </g>
                       ))}
 
@@ -980,7 +1043,7 @@ const firebaseConfig = {
                     <tr>
                       <th className="px-4 py-4 rounded-tl-lg">Jogador</th>
                       {pastSeasons.map(s => (
-                        <th key={`th-${s.id}`} className="px-3 py-4 text-center whitespace-nowrap">{s.name}</th>
+                        <th key={`th-${s.id}`} className="px-3 py-4 text-center whitespace-nowrap">{s?.name}</th>
                       ))}
                       <th className="px-4 py-4 rounded-tr-lg text-center text-yellow-500">Pts Totais</th>
                     </tr>
@@ -990,12 +1053,12 @@ const firebaseConfig = {
                        <tr><td colSpan={pastSeasons.length + 2} className="text-center py-6 text-stone-600 font-semibold">Nenhuma partida registada.</td></tr>
                     )}
                     {allPlayersList.map(p => {
-                      const totalPts = sortedGlobalRanking.find(r => r.name === p)?.pts || 0;
+                      const totalPts = sortedGlobalRanking.find(r => r?.name === p)?.pts || 0;
                       return (
                         <tr key={`tr-${p}`} className="border-b border-stone-800/50 hover:bg-[#121212] transition-colors">
                           <td className="px-4 py-3 font-bold text-stone-200 uppercase tracking-wide">{p}</td>
                           {pastSeasons.map(s => {
-                            const placement = s.placements?.find(x => x.name === p);
+                            const placement = s.placements?.find(x => x?.name === p);
                             let badgeClass = 'text-stone-600 font-bold'; 
                             let displayPos = '-';
                             if (placement) {
@@ -1040,7 +1103,7 @@ const firebaseConfig = {
                         {isExporting ? <i className="fa-solid fa-arrows-rotate animate-spin"></i> : <i className="fa-solid fa-camera"></i>}
                       </button>
                       <button onClick={handleResetToDefault} className="bg-orange-900/20 hover:bg-orange-900/40 text-orange-500 p-2 rounded-lg transition-all border border-orange-900/30 ml-2" title="Restaurar Padrão"><i className="fa-solid fa-rotate-left"></i></button>
-                      <button onClick={handleClearRanking} className="bg-red-900/20 hover:bg-red-900/40 text-red-500 p-2 rounded-lg transition-all border border-red-900/30" title="Apagar Tudo na Nuvem"><i className="fa-solid fa-trash-can"></i></button>
+                      <button onClick={handleClearRanking} className="bg-red-900/20 hover:bg-red-900/40 text-red-500 p-2 rounded-lg transition-all border border-red-900/30" title="Apagar Tudo"><i className="fa-solid fa-trash-can"></i></button>
                     </div>
                   )}
                 </div>
@@ -1056,13 +1119,13 @@ const firebaseConfig = {
                       <div className="flex items-center gap-4 pl-3">
                         <span className={`text-2xl font-black w-8 text-center ${idx===0?'text-yellow-500':idx===1?'text-stone-300':idx===2?'text-orange-500':'text-stone-600'}`}>{idx+1}</span>
                         <div>
-                          <div className="font-bold text-lg text-stone-100 uppercase">{p.name}</div>
-                          {p.titles > 0 && (
+                          <div className="font-bold text-lg text-stone-100 uppercase">{p?.name}</div>
+                          {p?.titles > 0 && (
                             <div className="flex items-center gap-1 mt-1 text-xs font-bold text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded border border-yellow-500/20 w-fit"><i className="fa-solid fa-trophy"></i> {p.titles} TÍTULO{p.titles>1?'S':''}</div>
                           )}
                         </div>
                       </div>
-                      <div className="text-right text-2xl font-black text-yellow-500">{p.pts} <span className="text-xs text-stone-500">PTS</span></div>
+                      <div className="text-right text-2xl font-black text-yellow-500">{p?.pts} <span className="text-xs text-stone-500">PTS</span></div>
                     </div>
                   ))}
                 </div>
@@ -1099,17 +1162,17 @@ const firebaseConfig = {
                   <div key={season.id} className="bg-[#121212] p-5 rounded-2xl border border-stone-800 flex flex-col gap-3 relative overflow-hidden group hover:border-yellow-900/50 transition-all">
                     {idx === 0 && pastSeasons.length > 0 && <div className="absolute top-0 right-0 bg-yellow-600 text-black text-[10px] font-bold px-2 py-1 rounded-bl-lg uppercase">Mais Recente</div>}
                     <div className="text-sm font-black text-stone-500 uppercase tracking-widest flex items-center justify-between">
-                      <span>{season.name}</span>
-                      <span className="text-[9px] bg-[#050505] text-stone-500 border border-stone-800 px-2 py-0.5 rounded">{season.tournamentData?.mode === 'selecoes' ? 'SELEÇÕES' : 'CLUBES'}</span>
+                      <span>{season?.name}</span>
+                      <span className="text-[9px] bg-[#050505] text-stone-500 border border-stone-800 px-2 py-0.5 rounded">{season?.tournamentData?.mode === 'selecoes' ? 'SELEÇÕES' : 'CLUBES'}</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <div className="bg-gradient-to-br from-yellow-600 to-yellow-800 p-2.5 rounded-xl border border-yellow-500/50"><i className="fa-solid fa-trophy text-black text-xl"></i></div>
                       <div>
                         <div className="text-[10px] text-yellow-600 font-bold uppercase tracking-widest">Campeão</div>
-                        <div className="text-lg font-black text-stone-100 uppercase">{season.champion}</div>
+                        <div className="text-lg font-black text-stone-100 uppercase">{season?.champion}</div>
                       </div>
                     </div>
-                    {season.tournamentData && (
+                    {season?.tournamentData && (
                       <button onClick={() => setSelectedSeasonDetails(season)} className="mt-2 w-full py-2 bg-[#050505] hover:bg-[#1a1a1a] text-stone-400 hover:text-yellow-500 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-colors border border-stone-800 flex items-center justify-center gap-2">
                         <i className="fa-solid fa-folder-open"></i> Ver Placares
                       </button>
@@ -1127,7 +1190,7 @@ const firebaseConfig = {
            return (
              <div className="flex flex-col items-center justify-center py-20 text-stone-500">
                 <i className="fa-solid fa-circle-notch fa-spin text-4xl text-yellow-500 mb-4"></i>
-                <h2 className="text-xl font-bold uppercase tracking-widest">Conectando ao Servidor...</h2>
+                <h2 className="text-xl font-bold uppercase tracking-widest">Carregando a Copa...</h2>
              </div>
            );
         }
@@ -1220,12 +1283,12 @@ const firebaseConfig = {
                 </button>
               )}
               {phase === 'playoffs' && playoffs?.stage === 'playin' && isOrganizer && (
-                <button onClick={advanceToSemis} disabled={!(getMatchupStatus(playoffs.playins[0]).isFinished && getMatchupStatus(playoffs.playins[1]).isFinished)} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${(getMatchupStatus(playoffs.playins[0]).isFinished && getMatchupStatus(playoffs.playins[1]).isFinished) ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
+                <button onClick={advanceToSemis} disabled={!(getMatchupStatus(playoffs.playins?.[0]).isFinished && getMatchupStatus(playoffs.playins?.[1]).isFinished)} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${(getMatchupStatus(playoffs.playins?.[0]).isFinished && getMatchupStatus(playoffs.playins?.[1]).isFinished) ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
                   <span>Ir para as Semifinais</span><i className="fa-solid fa-chevron-right"></i>
                 </button>
               )}
               {phase === 'playoffs' && playoffs?.stage === 'semifinals' && isOrganizer && (
-                <button onClick={advanceToFinal} disabled={!(getMatchupStatus(playoffs.semifinals[0]).isFinished && getMatchupStatus(playoffs.semifinals[1]).isFinished)} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${(getMatchupStatus(playoffs.semifinals[0]).isFinished && getMatchupStatus(playoffs.semifinals[1]).isFinished) ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
+                <button onClick={advanceToFinal} disabled={!(getMatchupStatus(playoffs.semifinals?.[0]).isFinished && getMatchupStatus(playoffs.semifinals?.[1]).isFinished)} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${(getMatchupStatus(playoffs.semifinals?.[0]).isFinished && getMatchupStatus(playoffs.semifinals?.[1]).isFinished) ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
                   <span>Ir para a Grande Final</span><i className="fa-solid fa-chevron-right"></i>
                 </button>
               )}
@@ -1246,26 +1309,26 @@ const firebaseConfig = {
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <div className="lg:col-span-7 space-y-6">
-                {phase === 'playing' && (
+                {phase === 'playing' && rounds && rounds[currentRoundIndex] && (
                   <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-stone-800">
                     <h2 className="text-xl font-black text-white mb-6 uppercase"><i className="fa-solid fa-play text-yellow-500 mr-2"></i> Rodada {currentRoundIndex + 1}</h2>
                     <div className="space-y-4">
-                      {rounds[currentRoundIndex].matches.map((m, idx) => (
-                        <div key={m.id} className={`border rounded-xl p-4 md:p-6 transition-colors ${m.isBye ? 'bg-yellow-900/10 border-yellow-900/30' : 'bg-[#121212] border-stone-800'}`}>
-                          {m.isBye ? (
+                      {rounds[currentRoundIndex]?.matches?.map((m, idx) => (
+                        <div key={m?.id || idx} className={`border rounded-xl p-4 md:p-6 transition-colors ${m?.isBye ? 'bg-yellow-900/10 border-yellow-900/30' : 'bg-[#121212] border-stone-800'}`}>
+                          {m?.isBye ? (
                             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                               <div className="flex items-center gap-3"><span className="bg-yellow-900/30 text-yellow-500 text-xs font-bold px-3 py-1.5 rounded-full border border-yellow-800/50">BYE / FOLGA</span><TeamDisplay id={m.team1} dark /></div>
                               <span className="text-sm font-semibold text-stone-400 bg-[#1a1a1a] px-3 py-1 rounded-lg border border-stone-800">Vitória Automática (+3 PTS)</span>
                             </div>
                           ) : (
                             <div className="flex items-center justify-between gap-2 md:gap-4">
-                              <div className="flex-1 w-0"><TeamDisplay id={m.team1} align="right" dark /></div>
+                              <div className="flex-1 w-0"><TeamDisplay id={m?.team1} align="right" dark /></div>
                               <div className="flex items-center gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800 shrink-0 shadow-inner">
-                                <input type="number" disabled={!isOrganizer} min="0" value={m.score1} onChange={(e) => handleSwissScoreChange(currentRoundIndex, idx, 'score1', e.target.value)} className="w-12 md:w-14 h-12 text-center text-xl font-black bg-[#1a1a1a] text-white border border-stone-700 rounded-md focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={m?.score1} onChange={(e) => handleSwissScoreChange(currentRoundIndex, idx, 'score1', e.target.value)} className="w-12 md:w-14 h-12 text-center text-xl font-black bg-[#1a1a1a] text-white border border-stone-700 rounded-md focus:ring-2 focus:ring-yellow-500 outline-none" />
                                 <span className="font-bold text-stone-600 text-sm">X</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={m.score2} onChange={(e) => handleSwissScoreChange(currentRoundIndex, idx, 'score2', e.target.value)} className="w-12 md:w-14 h-12 text-center text-xl font-black bg-[#1a1a1a] text-white border border-stone-700 rounded-md focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={m?.score2} onChange={(e) => handleSwissScoreChange(currentRoundIndex, idx, 'score2', e.target.value)} className="w-12 md:w-14 h-12 text-center text-xl font-black bg-[#1a1a1a] text-white border border-stone-700 rounded-md focus:ring-2 focus:ring-yellow-500 outline-none" />
                               </div>
-                              <div className="flex-1 w-0"><TeamDisplay id={m.team2} align="left" dark /></div>
+                              <div className="flex-1 w-0"><TeamDisplay id={m?.team2} align="left" dark /></div>
                             </div>
                           )}
                         </div>
@@ -1274,7 +1337,7 @@ const firebaseConfig = {
                   </div>
                 )}
 
-                {phase === 'playoffs' && playoffs?.stage === 'playin' && (
+                {phase === 'playoffs' && playoffs?.stage === 'playin' && playoffs?.playins && (
                   <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-orange-900/30">
                     <h2 className="text-xl font-black text-white mb-6 uppercase"><i className="fa-solid fa-circle-exclamation text-orange-500 mr-2"></i> Play-in (Ida e Volta)</h2>
                     <div className="grid md:grid-cols-2 gap-6">
@@ -1285,33 +1348,33 @@ const firebaseConfig = {
                             {status.isFinished && <div className="absolute inset-0 bg-orange-900/10 pointer-events-none"></div>}
                             <div className="flex justify-between items-center mb-5 pb-3 border-b border-stone-800">
                               <h3 className="font-bold text-stone-300">{idx === 0 ? '3º vs 6º' : '4º vs 5º'}</h3>
-                              {status.isFinished && <span className="bg-orange-900/30 border border-orange-800/50 text-orange-400 text-[10px] font-bold px-2 py-1 rounded-full uppercase shadow-sm">Avançou: {getTeamInfo(status.winner).playerName}</span>}
+                              {status.isFinished && <span className="bg-orange-900/30 border border-orange-800/50 text-orange-400 text-[10px] font-bold px-2 py-1 rounded-full uppercase shadow-sm">Avançou: {getTeamInfo(status.winner)?.playerName}</span>}
                             </div>
                             <div className="flex justify-between items-start mb-6 gap-2">
-                              <div className="w-[45%]"><TeamDisplay id={match.team1} align="center" dark /></div>
+                              <div className="w-[45%]"><TeamDisplay id={match?.team1} align="center" dark /></div>
                               <div className="text-stone-600 font-bold text-xl mt-2">VS</div>
-                              <div className="w-[45%]"><TeamDisplay id={match.team2} align="center" dark /></div>
+                              <div className="w-[45%]"><TeamDisplay id={match?.team2} align="center" dark /></div>
                             </div>
                             <div className="space-y-3 mt-auto">
                               <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
                                 <span className="text-xs font-bold text-stone-500 w-12">IDA</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s1} onChange={e => handlePlayoffScore('playins', idx, 'leg1', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg1?.s1} onChange={e => handlePlayoffScore('playins', idx, 'leg1', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
                                 <span className="text-stone-600 text-xs">x</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s2} onChange={e => handlePlayoffScore('playins', idx, 'leg1', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg1?.s2} onChange={e => handlePlayoffScore('playins', idx, 'leg1', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
                               </div>
                               <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
                                 <span className="text-xs font-bold text-stone-500 w-12">VOLTA</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s1} onChange={e => handlePlayoffScore('playins', idx, 'leg2', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg2?.s1} onChange={e => handlePlayoffScore('playins', idx, 'leg2', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
                                 <span className="text-stone-600 text-xs">x</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s2} onChange={e => handlePlayoffScore('playins', idx, 'leg2', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg2?.s2} onChange={e => handlePlayoffScore('playins', idx, 'leg2', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
                               </div>
                               {status.isTied && (
                                 <div className="mt-2 pt-2 border-t border-orange-900/30">
                                   <div className="flex items-center justify-between gap-2 bg-orange-900/10 p-2 rounded-lg border border-orange-800/30">
                                     <span className="text-xs font-bold text-orange-600 w-12">PÊN</span>
-                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s1} onChange={e => handlePlayoffScore('playins', idx, 'pen', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-orange-700/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match?.pen?.s1} onChange={e => handlePlayoffScore('playins', idx, 'pen', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-orange-700/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
                                     <span className="text-orange-700 text-xs">x</span>
-                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s2} onChange={e => handlePlayoffScore('playins', idx, 'pen', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-orange-700/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match?.pen?.s2} onChange={e => handlePlayoffScore('playins', idx, 'pen', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-orange-700/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
                                   </div>
                                 </div>
                               )}
@@ -1323,7 +1386,7 @@ const firebaseConfig = {
                   </div>
                 )}
 
-                {phase === 'playoffs' && playoffs?.stage === 'semifinals' && (
+                {phase === 'playoffs' && playoffs?.stage === 'semifinals' && playoffs?.semifinals && (
                   <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-stone-800">
                     <h2 className="text-xl font-black text-white mb-6 uppercase"><i className="fa-solid fa-trophy text-yellow-500 mr-2"></i> Semifinais (Ida e Volta)</h2>
                     <div className="grid md:grid-cols-2 gap-6">
@@ -1334,33 +1397,33 @@ const firebaseConfig = {
                             {status.isFinished && <div className="absolute inset-0 bg-yellow-900/5 pointer-events-none"></div>}
                             <div className="flex justify-between items-center mb-5 pb-3 border-b border-stone-800">
                               <h3 className="font-bold text-stone-300">Semifinal {idx + 1}</h3>
-                              {status.isFinished && <span className="bg-yellow-900/20 border border-yellow-700/30 text-yellow-500 text-[10px] font-bold px-2 py-1 rounded-full uppercase shadow-sm">Avançou: {getTeamInfo(status.winner).playerName}</span>}
+                              {status.isFinished && <span className="bg-yellow-900/20 border border-yellow-700/30 text-yellow-500 text-[10px] font-bold px-2 py-1 rounded-full uppercase shadow-sm">Avançou: {getTeamInfo(status.winner)?.playerName}</span>}
                             </div>
                             <div className="flex justify-between items-start mb-6 gap-2">
-                              <div className="w-[45%]"><TeamDisplay id={match.team1} align="center" dark /></div>
+                              <div className="w-[45%]"><TeamDisplay id={match?.team1} align="center" dark /></div>
                               <div className="text-stone-600 font-bold text-xl mt-2">VS</div>
-                              <div className="w-[45%]"><TeamDisplay id={match.team2} align="center" dark /></div>
+                              <div className="w-[45%]"><TeamDisplay id={match?.team2} align="center" dark /></div>
                             </div>
                             <div className="space-y-3 mt-auto">
                               <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
                                 <span className="text-xs font-bold text-stone-500 w-12">IDA</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'leg1', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg1?.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'leg1', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
                                 <span className="text-stone-600 text-xs">x</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'leg1', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg1?.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'leg1', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
                               </div>
                               <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
                                 <span className="text-xs font-bold text-stone-500 w-12">VOLTA</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'leg2', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg2?.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'leg2', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
                                 <span className="text-stone-600 text-xs">x</span>
-                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'leg2', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <input type="number" disabled={!isOrganizer} min="0" value={match?.leg2?.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'leg2', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
                               </div>
                               {status.isTied && (
                                 <div className="mt-2 pt-2 border-t border-yellow-900/30">
                                   <div className="flex items-center justify-between gap-2 bg-yellow-900/10 p-2 rounded-lg border border-yellow-700/30">
                                     <span className="text-xs font-bold text-yellow-600 w-12">PÊN</span>
-                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'pen', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-yellow-600/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match?.pen?.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'pen', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-yellow-600/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
                                     <span className="text-yellow-700 text-xs">x</span>
-                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'pen', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-yellow-600/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match?.pen?.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'pen', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-yellow-600/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
                                   </div>
                                 </div>
                               )}
@@ -1372,29 +1435,29 @@ const firebaseConfig = {
                   </div>
                 )}
 
-                {phase === 'playoffs' && playoffs?.stage === 'finals' && (
+                {phase === 'playoffs' && playoffs?.stage === 'finals' && playoffs?.final && playoffs?.thirdPlace && (
                   <div className="space-y-6">
                     <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-[0_0_40px_rgba(234,179,8,0.15)] border border-yellow-600/50 relative overflow-hidden">
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-yellow-700 via-yellow-400 to-yellow-700"></div>
                       <h2 className="text-xl font-black text-yellow-500 mb-6 flex items-center justify-center gap-2 uppercase tracking-widest"><i className="fa-solid fa-star"></i> Grande Final <i className="fa-solid fa-star"></i></h2>
                       <div className="max-w-xl mx-auto relative z-10">
                         <div className="flex justify-between items-center mb-6 gap-4">
-                          <div className="flex-1 bg-[#121212] p-4 rounded-xl border border-stone-800"><TeamDisplay id={playoffs.final.team1} align="center" dark /></div>
+                          <div className="flex-1 bg-[#121212] p-4 rounded-xl border border-stone-800"><TeamDisplay id={playoffs.final?.team1} align="center" dark /></div>
                           <div className="text-stone-700 font-bold text-3xl">VS</div>
-                          <div className="flex-1 bg-[#121212] p-4 rounded-xl border border-stone-800"><TeamDisplay id={playoffs.final.team2} align="center" dark /></div>
+                          <div className="flex-1 bg-[#121212] p-4 rounded-xl border border-stone-800"><TeamDisplay id={playoffs.final?.team2} align="center" dark /></div>
                         </div>
                         <div className="flex items-center justify-center gap-4 bg-[#050505] p-4 rounded-xl border border-stone-800 shadow-inner max-w-sm mx-auto">
-                          <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.leg1.s1} onChange={e => handlePlayoffScore('final', null, 'leg1', 's1', e.target.value)} className="w-20 h-16 text-3xl text-center font-black border border-stone-700 bg-[#1a1a1a] text-white rounded-lg focus:ring-2 focus:ring-yellow-500 outline-none" />
+                          <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final?.leg1?.s1} onChange={e => handlePlayoffScore('final', null, 'leg1', 's1', e.target.value)} className="w-20 h-16 text-3xl text-center font-black border border-stone-700 bg-[#1a1a1a] text-white rounded-lg focus:ring-2 focus:ring-yellow-500 outline-none" />
                           <span className="text-stone-600 font-bold text-xl">X</span>
-                          <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.leg1.s2} onChange={e => handlePlayoffScore('final', null, 'leg1', 's2', e.target.value)} className="w-20 h-16 text-3xl text-center font-black border border-stone-700 bg-[#1a1a1a] text-white rounded-lg focus:ring-2 focus:ring-yellow-500 outline-none" />
+                          <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final?.leg1?.s2} onChange={e => handlePlayoffScore('final', null, 'leg1', 's2', e.target.value)} className="w-20 h-16 text-3xl text-center font-black border border-stone-700 bg-[#1a1a1a] text-white rounded-lg focus:ring-2 focus:ring-yellow-500 outline-none" />
                         </div>
                         {getMatchupStatus(playoffs.final).isTied && (
                           <div className="mt-4 max-w-sm mx-auto bg-yellow-900/10 p-4 rounded-xl border border-yellow-700/30">
                             <p className="text-center text-xs text-yellow-500 font-bold mb-2 uppercase">Pênaltis</p>
                             <div className="flex items-center justify-center gap-4">
-                              <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.pen.s1} onChange={e => handlePlayoffScore('final', null, 'pen', 's1', e.target.value)} className="w-16 h-12 text-xl text-center font-bold border border-yellow-600/50 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-yellow-500 outline-none" />
+                              <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final?.pen?.s1} onChange={e => handlePlayoffScore('final', null, 'pen', 's1', e.target.value)} className="w-16 h-12 text-xl text-center font-bold border border-yellow-600/50 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-yellow-500 outline-none" />
                               <span className="text-yellow-700 font-bold">X</span>
-                              <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.pen.s2} onChange={e => handlePlayoffScore('final', null, 'pen', 's2', e.target.value)} className="w-16 h-12 text-xl text-center font-bold border border-yellow-600/50 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-yellow-500 outline-none" />
+                              <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final?.pen?.s2} onChange={e => handlePlayoffScore('final', null, 'pen', 's2', e.target.value)} className="w-16 h-12 text-xl text-center font-bold border border-yellow-600/50 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-yellow-500 outline-none" />
                             </div>
                           </div>
                         )}
@@ -1403,7 +1466,7 @@ const firebaseConfig = {
                             <div className="inline-block relative">
                               <div className="absolute inset-0 bg-yellow-500 blur-xl opacity-20 rounded-full"></div>
                               <span className="relative bg-gradient-to-r from-yellow-600 to-yellow-500 text-black font-black px-8 py-3 rounded-full text-xl shadow-[0_0_20px_rgba(234,179,8,0.4)] border border-yellow-300 uppercase tracking-widest flex items-center gap-3">
-                                <i className="fa-solid fa-trophy"></i> {getTeamInfo(getMatchupStatus(playoffs.final).winner).playerName}
+                                <i className="fa-solid fa-trophy"></i> {getTeamInfo(getMatchupStatus(playoffs.final).winner)?.playerName}
                               </span>
                             </div>
                           </div>
@@ -1415,25 +1478,25 @@ const firebaseConfig = {
                       <h2 className="text-sm font-bold text-stone-500 mb-6 flex items-center justify-center uppercase tracking-widest">Disputa de 3º Lugar</h2>
                       <div className="max-w-xl mx-auto">
                         <div className="flex justify-between items-center mb-4 gap-4">
-                          <div className="flex-1"><TeamDisplay id={playoffs.thirdPlace.team1} align="right" dark /></div>
+                          <div className="flex-1"><TeamDisplay id={playoffs.thirdPlace?.team1} align="right" dark /></div>
                           <div className="flex items-center gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800 shrink-0 shadow-inner">
-                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.leg1.s1} onChange={e => handlePlayoffScore('thirdPlace', null, 'leg1', 's1', e.target.value)} className="w-12 h-12 text-center text-xl font-bold border border-stone-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace?.leg1?.s1} onChange={e => handlePlayoffScore('thirdPlace', null, 'leg1', 's1', e.target.value)} className="w-12 h-12 text-center text-xl font-bold border border-stone-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
                             <span className="font-bold text-stone-600 text-sm">X</span>
-                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.leg1.s2} onChange={e => handlePlayoffScore('thirdPlace', null, 'leg1', 's2', e.target.value)} className="w-12 h-12 text-center text-xl font-bold border border-stone-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace?.leg1?.s2} onChange={e => handlePlayoffScore('thirdPlace', null, 'leg1', 's2', e.target.value)} className="w-12 h-12 text-center text-xl font-bold border border-stone-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
                           </div>
-                          <div className="flex-1"><TeamDisplay id={playoffs.thirdPlace.team2} align="left" dark /></div>
+                          <div className="flex-1"><TeamDisplay id={playoffs.thirdPlace?.team2} align="left" dark /></div>
                         </div>
                         {getMatchupStatus(playoffs.thirdPlace).isTied && (
                           <div className="mt-3 flex justify-center items-center gap-3 bg-orange-900/10 py-2 px-4 rounded-lg border border-orange-800/30 w-max mx-auto">
                             <span className="text-xs font-bold text-orange-500 uppercase">Pênaltis:</span>
-                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.pen.s1} onChange={e => handlePlayoffScore('thirdPlace', null, 'pen', 's1', e.target.value)} className="w-10 h-8 text-center text-sm font-bold border border-orange-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace?.pen?.s1} onChange={e => handlePlayoffScore('thirdPlace', null, 'pen', 's1', e.target.value)} className="w-10 h-8 text-center text-sm font-bold border border-orange-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
                             <span className="text-orange-700 text-xs">x</span>
-                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.pen.s2} onChange={e => handlePlayoffScore('thirdPlace', null, 'pen', 's2', e.target.value)} className="w-10 h-8 text-center text-sm font-bold border border-orange-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace?.pen?.s2} onChange={e => handlePlayoffScore('thirdPlace', null, 'pen', 's2', e.target.value)} className="w-10 h-8 text-center text-sm font-bold border border-orange-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
                           </div>
                         )}
                         {getMatchupStatus(playoffs.thirdPlace).isFinished && (
                           <div className="mt-4 text-center">
-                            <span className="text-orange-500 font-bold text-sm bg-orange-900/20 px-4 py-1.5 rounded-full border border-orange-800/30">3º Colocado: {getTeamInfo(getMatchupStatus(playoffs.thirdPlace).winner).playerName}</span>
+                            <span className="text-orange-500 font-bold text-sm bg-orange-900/20 px-4 py-1.5 rounded-full border border-orange-800/30">3º Colocado: {getTeamInfo(getMatchupStatus(playoffs.thirdPlace).winner)?.playerName}</span>
                           </div>
                         )}
                       </div>
@@ -1466,21 +1529,21 @@ const firebaseConfig = {
                     
                     <div className="flex flex-col md:flex-row justify-center items-end gap-4 md:gap-2 max-w-3xl mx-auto mt-16 relative z-10 h-64">
                       <div className="order-2 md:order-1 w-full md:w-1/3 flex flex-col items-center">
-                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs.final).loser} align="center" dark /></div>
+                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs?.final).loser} align="center" dark /></div>
                         <div className="bg-gradient-to-b from-stone-300 to-stone-500 w-full rounded-t-lg h-32 flex flex-col items-center justify-start pt-4 border border-stone-400/50 shadow-lg relative">
                           <span className="text-4xl font-black text-stone-800 opacity-50">2</span>
                           <div className="absolute -top-3 text-[10px] font-black bg-stone-900 text-white px-2 py-1 rounded shadow-md border border-stone-700">🥈 VICE</div>
                         </div>
                       </div>
                       <div className="order-1 md:order-2 w-full md:w-2/5 flex flex-col items-center">
-                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs.final).winner} align="center" dark /></div>
+                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs?.final).winner} align="center" dark /></div>
                         <div className="bg-gradient-to-b from-yellow-400 via-yellow-500 to-yellow-600 w-full rounded-t-lg h-48 flex flex-col items-center justify-start pt-6 border-2 border-yellow-300 shadow-[0_0_30px_rgba(234,179,8,0.3)] relative z-20">
                           <span className="text-6xl font-black text-yellow-900 opacity-60">1</span>
                           <div className="absolute -top-4 text-xs font-black bg-stone-900 text-yellow-500 px-3 py-1 rounded shadow-md border border-stone-700">🏆 CAMPEÃO</div>
                         </div>
                       </div>
                       <div className="order-3 md:order-3 w-full md:w-1/3 flex flex-col items-center">
-                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs.thirdPlace).winner} align="center" dark /></div>
+                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs?.thirdPlace).winner} align="center" dark /></div>
                         <div className="bg-gradient-to-b from-orange-500 to-orange-700 w-full rounded-t-lg h-24 flex flex-col items-center justify-start pt-2 border border-orange-400/50 shadow-lg relative">
                           <span className="text-3xl font-black text-orange-950 opacity-50">3</span>
                           <div className="absolute -top-3 text-[10px] font-black bg-stone-900 text-orange-500 px-2 py-1 rounded shadow-md border border-stone-700">🥉 3º LUGAR</div>
@@ -1519,14 +1582,11 @@ const firebaseConfig = {
           <div className="fixed top-[-10000px] left-[-10000px] pointer-events-none z-[-1]">
             <div id="premium-export-node" ref={exportRef} style={{ width: '1080px', height: '1350px', backgroundColor: '#050505', backgroundImage: 'radial-gradient(circle at top left, rgba(202,138,4,0.1) 0%, rgba(0,0,0,0) 60%)', color: '#ffffff', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '100px 80px', display: 'none', flexDirection: 'column', position: 'relative', overflow: 'hidden', boxSizing: 'border-box' }}>
               
-              {/* Marca d'água central */}
               <div style={{ position: 'absolute', left: '50%', top: '55%', transform: 'translate(-50%, -50%)', zIndex: 1, opacity: 0.05, width: '800px', display: 'flex', justifyContent: 'center' }}>
                 <img src={customLogo} style={{ width: '100%', height: 'auto', objectFit: 'contain', filter: 'grayscale(100%)' }} onError={(e) => e.target.style.display = 'none'} />
               </div>
 
               <div style={{ zIndex: 10, position: 'relative', width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
-                
-                {/* Header */}
                 <div style={{ marginBottom: '60px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
                   <div>
                     <h1 style={{ fontSize: '85px', fontWeight: 900, margin: 0, lineHeight: 1.1, letterSpacing: '-1px', color: '#facc15', textShadow: '0 4px 10px rgba(202,138,4,0.3)' }}>HALL DA FAMA<br />COPA BDT</h1>
@@ -1537,7 +1597,6 @@ const firebaseConfig = {
                   </div>
                 </div>
 
-                {/* Tabela de Classificação - Apenas Top 5 */}
                 <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', marginTop: '10px', flexGrow: 1 }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -1557,16 +1616,15 @@ const firebaseConfig = {
                       return (
                         <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                           <td style={{ width: '12%', padding: '45px 0', fontSize: '56px', fontWeight: 900, color: numColor, textAlign: 'center' }}>{idx + 1}º</td>
-                          <td style={{ padding: '45px 0 45px 30px', fontSize: '52px', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.5px', textAlign: 'left' }}>{player.name}</td>
-                          <td style={{ width: '20%', padding: '45px 0', fontSize: '52px', fontWeight: 800, color: '#a8a29e', textAlign: 'center' }}>{player.titles}</td>
-                          <td style={{ width: '20%', padding: '45px 0', fontSize: '52px', fontWeight: 900, color: '#facc15', textAlign: 'center' }}>{player.pts}</td>
+                          <td style={{ padding: '45px 0 45px 30px', fontSize: '52px', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.5px', textAlign: 'left' }}>{player?.name}</td>
+                          <td style={{ width: '20%', padding: '45px 0', fontSize: '52px', fontWeight: 800, color: '#a8a29e', textAlign: 'center' }}>{player?.titles}</td>
+                          <td style={{ width: '20%', padding: '45px 0', fontSize: '52px', fontWeight: 900, color: '#facc15', textAlign: 'center' }}>{player?.pts}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
 
-                {/* Rodapé */}
                 <div style={{ marginTop: '50px', width: '100%', textAlign: 'center', paddingBottom: '20px' }}>
                   <span style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '8px', color: '#57534e', textTransform: 'uppercase' }}>Copa BDT Oficial</span>
                 </div>
