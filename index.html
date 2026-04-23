@@ -46,7 +46,7 @@ const firebaseConfig = {
   messagingSenderId: "584136834041",
   appId: "1:584136834041:web:ebe04af91654e1bbfe9b28"
 };
-    // Inicializa o Firebase com proteção anti-crash
+
     let db = null;
     try {
       if (!firebase.apps.length) {
@@ -78,7 +78,7 @@ const firebaseConfig = {
 
     function App() {
       const [dataLoaded, setDataLoaded] = useState(false);
-      const [syncStatus, setSyncStatus] = useState('saved'); // 'saving', 'saved', 'error', 'offline'
+      const [syncStatus, setSyncStatus] = useState('saved'); 
 
       const [activeTab, setActiveTab] = useState('ranking'); 
       const [isOrganizer, setIsOrganizer] = useState(false);
@@ -96,7 +96,9 @@ const firebaseConfig = {
       const [showClearModal, setShowClearModal] = useState(false);
       const [showResetDefaultModal, setShowResetDefaultModal] = useState(false);
       const [isExporting, setIsExporting] = useState(false);
+      
       const [customLogo, setCustomLogo] = useState(LOGO_URL);
+      const [logoError, setLogoError] = useState(false);
 
       const [pastSeasons, setPastSeasons] = useState([...INITIAL_SEASONS]);
       const [globalRanking, setGlobalRanking] = useState([...INITIAL_RANKING]);
@@ -116,12 +118,10 @@ const firebaseConfig = {
       const [playoffs, setPlayoffs] = useState(null);
       const [rankingUpdated, setRankingUpdated] = useState(false);
 
-      // Atualiza a referência de organizador
       useEffect(() => { isOrgRef.current = isOrganizer; }, [isOrganizer]);
 
-      // 1. CARREGAR E OUVIR EM TEMPO REAL DA NUVEM (Com Timeout de Segurança)
+      // 1. CARREGAR E OUVIR EM TEMPO REAL DA NUVEM
       useEffect(() => {
-        // Se a cloud demorar mais de 2 segundos, força a entrada no site (Impede ficar preso a carregar)
         const fallbackTimer = setTimeout(() => {
           setDataLoaded(true);
         }, 2000);
@@ -134,7 +134,7 @@ const firebaseConfig = {
 
         const unsubscribe = db.collection('bdt_database').doc('main_state').onSnapshot((doc) => {
           if (doc.exists) {
-            if (isOrgRef.current) return; // Ignora leitura se sou o organizador para não causar glitches
+            if (isOrgRef.current) return; 
 
             const data = doc.data();
             if (data.pastSeasons) setPastSeasons(data.pastSeasons);
@@ -166,14 +166,13 @@ const firebaseConfig = {
         };
       }, []);
 
-      // 2. AUTO-SALVAR (À prova de Crash / Tela Preta)
+      // 2. AUTO-SALVAR
       useEffect(() => {
         if (!isOrganizer || !dataLoaded || !db) return;
         
         setSyncStatus('saving');
         const timer = setTimeout(() => {
           try {
-            // O JSON.parse(JSON.stringify) limpa valores 'undefined' mágicos que fazem o Firebase crashar a app!
             const cleanState = JSON.parse(JSON.stringify({
               pastSeasons, globalRanking, phase, seasonName, tournamentMode,
               tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated
@@ -197,7 +196,6 @@ const firebaseConfig = {
       }, [isOrganizer, dataLoaded, pastSeasons, globalRanking, phase, seasonName, tournamentMode, tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated]);
 
 
-      // --- CRITÉRIO DE DESEMPATE DO RANKING GLOBAL ---
       const sortedGlobalRanking = useMemo(() => {
         return [...globalRanking].sort((a, b) => {
           if (b.pts !== a.pts) return b.pts - a.pts; 
@@ -226,7 +224,7 @@ const firebaseConfig = {
         });
       }, [globalRanking, pastSeasons]);
 
-      // --- FUNÇÕES DE SISTEMA ---
+
       const handleExportData = () => {
         const data = { globalRanking, pastSeasons, phase, seasonName, tournamentMode, tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated };
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data));
@@ -269,7 +267,10 @@ const firebaseConfig = {
         const file = e.target.files[0];
         if (file) {
           const reader = new FileReader();
-          reader.onload = (event) => setCustomLogo(event.target.result);
+          reader.onload = (event) => {
+             setCustomLogo(event.target.result);
+             setLogoError(false); // Reseta o erro para mostrar a imagem nova
+          };
           reader.readAsDataURL(file);
         }
       };
@@ -898,40 +899,60 @@ const firebaseConfig = {
         </React.Fragment>
       );
 
+      // --- NOVO HEADER (FULL WIDTH) ---
       const NavHeader = () => (
-        <div className="max-w-4xl mx-auto mb-10 mt-2 flex flex-col items-center relative">
-          {!isOrganizer ? (
-            <button onClick={() => setShowLoginModal(true)} className="absolute top-0 right-4 md:right-0 text-stone-600 hover:text-yellow-500 transition-colors" title="Acesso Organizador"><i className="fa-solid fa-lock"></i></button>
-          ) : (
-            <div className="absolute top-0 right-4 md:right-0 flex items-center gap-4">
-              <span className={`text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 ${syncStatus === 'saving' ? 'text-blue-400' : syncStatus === 'saved' ? 'text-emerald-500' : syncStatus === 'offline' ? 'text-stone-500' : 'text-red-500'}`}>
-                {syncStatus === 'saving' ? <><i className="fa-solid fa-cloud-arrow-up animate-pulse"></i> Guardando...</> : syncStatus === 'saved' ? <><i className="fa-solid fa-cloud-check"></i> Na Nuvem</> : syncStatus === 'offline' ? <><i className="fa-solid fa-hard-drive"></i> Offline</> : <><i className="fa-solid fa-cloud-xmark"></i> Erro Sync</>}
-              </span>
-              <button onClick={() => {setIsOrganizer(false); setAlertMessage('Sessão encerrada.');}} className="text-yellow-500 hover:text-red-500 transition-colors" title="Sair do Modo Organizador"><i className="fa-solid fa-unlock"></i></button>
+        <header className="w-full pt-6 pb-4 px-4 sm:px-6 lg:px-8 border-b border-stone-800/50 bg-[#050505] mb-8 sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+            
+            {/* Logo / Título (Esquerda) */}
+            <div className={`relative group flex items-center justify-center md:justify-start min-w-[200px] ${isOrganizer ? 'cursor-pointer' : ''}`} onClick={() => isOrganizer && logoInputRef.current.click()} title={isOrganizer ? "Clique para alterar o logótipo" : "Copa BDT Oficial"}>
+              {!logoError ? (
+                 <img src={customLogo} alt="Logo" className="h-12 md:h-16 max-w-full object-contain drop-shadow-[0_0_15px_rgba(202,138,4,0.3)] transition-transform group-hover:scale-105" onError={() => setLogoError(true)} />
+              ) : (
+                 <div className="flex items-center justify-center gap-2 text-xl md:text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-600 tracking-widest uppercase">
+                    <i className="fa-solid fa-trophy text-yellow-500"></i> COPA BDT
+                 </div>
+              )}
+              {isOrganizer && (
+                <div className="absolute inset-0 bg-black/60 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm">
+                  <i className="fa-solid fa-camera text-yellow-500 text-xl drop-shadow-lg"></i>
+                </div>
+              )}
             </div>
-          )}
-          <div className={`relative group mb-6 flex items-center justify-center min-h-[96px] ${isOrganizer ? 'cursor-pointer' : ''}`} onClick={() => isOrganizer && logoInputRef.current.click()} title={isOrganizer ? "Clique para alterar o logótipo" : "Copa BDT Oficial"}>
-            <img src={customLogo} alt="Logo" className="h-24 max-w-full object-contain drop-shadow-[0_0_15px_rgba(202,138,4,0.3)] transition-transform group-hover:scale-105" onError={(e) => { e.target.onerror=null; e.target.style.display='none'; }} />
-            {isOrganizer && (
-              <div className="absolute inset-0 bg-black/50 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm">
-                <i className="fa-solid fa-camera text-yellow-500 text-2xl drop-shadow-lg"></i>
-              </div>
-            )}
+
+            {/* Abas (Centro) */}
+            <div className="flex justify-center flex-wrap gap-2 bg-[#0a0a0a] p-1.5 rounded-full border border-stone-800 shadow-xl">
+              <button onClick={() => setActiveTab('tournament')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'tournament' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
+                <i className="fa-solid fa-play"></i> Torneio
+              </button>
+              <button onClick={() => setActiveTab('ranking')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'ranking' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
+                <i className="fa-solid fa-trophy"></i> Ranking
+              </button>
+              <button onClick={() => setActiveTab('statistics')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'statistics' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
+                <i className="fa-solid fa-chart-line"></i> Estatísticas
+              </button>
+            </div>
+
+            {/* Cadeado / Nuvem (Direita) */}
+            <div className="flex items-center justify-center md:justify-end min-w-[200px]">
+              {!isOrganizer ? (
+                <button onClick={() => setShowLoginModal(true)} className="text-stone-600 hover:text-yellow-500 transition-colors bg-[#121212] w-12 h-12 flex items-center justify-center rounded-full border border-stone-800 shadow-sm" title="Acesso Organizador"><i className="fa-solid fa-lock text-lg"></i></button>
+              ) : (
+                <div className="flex items-center gap-4 bg-[#121212] py-2 px-4 rounded-full border border-stone-800 shadow-sm">
+                  <span className={`text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 ${syncStatus === 'saving' ? 'text-blue-400' : syncStatus === 'saved' ? 'text-emerald-500' : syncStatus === 'offline' ? 'text-stone-500' : 'text-red-500'}`}>
+                    {syncStatus === 'saving' ? <><i className="fa-solid fa-cloud-arrow-up animate-pulse"></i> A Salvar</> : syncStatus === 'saved' ? <><i className="fa-solid fa-cloud-check"></i> Na Nuvem</> : syncStatus === 'offline' ? <><i className="fa-solid fa-hard-drive"></i> Offline</> : <><i className="fa-solid fa-cloud-xmark"></i> Erro</>}
+                  </span>
+                  <div className="w-px h-4 bg-stone-700"></div>
+                  <button onClick={() => {setIsOrganizer(false); setAlertMessage('Sessão encerrada.');}} className="text-yellow-500 hover:text-red-500 transition-colors text-lg" title="Sair do Modo Organizador"><i className="fa-solid fa-unlock"></i></button>
+                </div>
+              )}
+            </div>
+            
           </div>
-          <div className="flex justify-center flex-wrap gap-2 bg-[#0a0a0a] p-1.5 rounded-full border border-stone-800 w-fit mx-auto shadow-xl">
-            <button onClick={() => setActiveTab('tournament')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'tournament' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
-              <i className="fa-solid fa-play"></i> Torneio
-            </button>
-            <button onClick={() => setActiveTab('ranking')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'ranking' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
-              <i className="fa-solid fa-trophy"></i> Ranking
-            </button>
-            <button onClick={() => setActiveTab('statistics')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'statistics' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
-              <i className="fa-solid fa-chart-line"></i> Estatísticas
-            </button>
-          </div>
-        </div>
+        </header>
       );
 
+      // --- ECRÃ: ESTATÍSTICAS ---
       const renderStatistics = () => {
         const allPlayersSet = new Set();
         pastSeasons.forEach(s => {
@@ -1518,7 +1539,7 @@ const firebaseConfig = {
                 </div>
               )}
 
-              {/* TELA: ENCERRADO */}
+              {/* TELA: ENCERRADO - PÓDIO AUMENTADO */}
               {phase === 'finished' && (
                 <div className="lg:col-span-12">
                   <div className="bg-[#0a0a0a] p-8 rounded-3xl shadow-2xl border border-stone-800 text-center relative overflow-hidden">
@@ -1527,28 +1548,32 @@ const firebaseConfig = {
                     <h2 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 via-yellow-500 to-yellow-200 mb-2 uppercase tracking-tighter relative z-10">O Campeão foi coroado!</h2>
                     <p className="text-stone-400 font-medium mb-12 tracking-widest uppercase text-sm relative z-10">Verifique as Estatísticas para ver as posições completas.</p>
                     
-                    <div className="flex flex-col md:flex-row justify-center items-end gap-4 md:gap-2 max-w-3xl mx-auto mt-16 relative z-10 h-64">
+                    <div className="flex flex-col md:flex-row justify-center items-end gap-4 md:gap-2 max-w-4xl mx-auto mt-16 relative z-10 h-80">
+                      
                       <div className="order-2 md:order-1 w-full md:w-1/3 flex flex-col items-center">
                         <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs?.final).loser} align="center" dark /></div>
-                        <div className="bg-gradient-to-b from-stone-300 to-stone-500 w-full rounded-t-lg h-32 flex flex-col items-center justify-start pt-4 border border-stone-400/50 shadow-lg relative">
-                          <span className="text-4xl font-black text-stone-800 opacity-50">2</span>
-                          <div className="absolute -top-3 text-[10px] font-black bg-stone-900 text-white px-2 py-1 rounded shadow-md border border-stone-700">🥈 VICE</div>
+                        <div className="bg-gradient-to-b from-stone-300 to-stone-500 w-full rounded-t-lg h-40 md:h-48 flex flex-col items-center justify-start pt-4 border border-stone-400/50 shadow-lg relative">
+                          <span className="text-5xl font-black text-stone-800 opacity-50">2</span>
+                          <div className="absolute -top-3 text-xs font-black bg-stone-900 text-white px-3 py-1 rounded shadow-md border border-stone-700">🥈 VICE</div>
                         </div>
                       </div>
+                      
                       <div className="order-1 md:order-2 w-full md:w-2/5 flex flex-col items-center">
                         <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs?.final).winner} align="center" dark /></div>
-                        <div className="bg-gradient-to-b from-yellow-400 via-yellow-500 to-yellow-600 w-full rounded-t-lg h-48 flex flex-col items-center justify-start pt-6 border-2 border-yellow-300 shadow-[0_0_30px_rgba(234,179,8,0.3)] relative z-20">
-                          <span className="text-6xl font-black text-yellow-900 opacity-60">1</span>
-                          <div className="absolute -top-4 text-xs font-black bg-stone-900 text-yellow-500 px-3 py-1 rounded shadow-md border border-stone-700">🏆 CAMPEÃO</div>
+                        <div className="bg-gradient-to-b from-yellow-400 via-yellow-500 to-yellow-600 w-full rounded-t-lg h-56 md:h-64 flex flex-col items-center justify-start pt-6 border-2 border-yellow-300 shadow-[0_0_30px_rgba(234,179,8,0.3)] relative z-20">
+                          <span className="text-7xl font-black text-yellow-900 opacity-60">1</span>
+                          <div className="absolute -top-4 text-sm font-black bg-stone-900 text-yellow-500 px-4 py-1.5 rounded shadow-md border border-stone-700">🏆 CAMPEÃO</div>
                         </div>
                       </div>
+                      
                       <div className="order-3 md:order-3 w-full md:w-1/3 flex flex-col items-center">
                         <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs?.thirdPlace).winner} align="center" dark /></div>
-                        <div className="bg-gradient-to-b from-orange-500 to-orange-700 w-full rounded-t-lg h-24 flex flex-col items-center justify-start pt-2 border border-orange-400/50 shadow-lg relative">
-                          <span className="text-3xl font-black text-orange-950 opacity-50">3</span>
+                        <div className="bg-gradient-to-b from-orange-500 to-orange-700 w-full rounded-t-lg h-28 md:h-36 flex flex-col items-center justify-start pt-2 border border-orange-400/50 shadow-lg relative">
+                          <span className="text-4xl font-black text-orange-950 opacity-50">3</span>
                           <div className="absolute -top-3 text-[10px] font-black bg-stone-900 text-orange-500 px-2 py-1 rounded shadow-md border border-stone-700">🥉 3º LUGAR</div>
                         </div>
                       </div>
+
                     </div>
                   </div>
                 </div>
@@ -1560,7 +1585,7 @@ const firebaseConfig = {
 
       // --- RENDERS ---
       return (
-        <div className="min-h-screen bg-[#000000] text-stone-200 font-sans relative pt-6 pb-12">
+        <div className="min-h-screen bg-[#000000] text-stone-200 font-sans relative pb-12">
           <input type="file" ref={logoInputRef} style={{ display: 'none' }} accept="image/*" onChange={handleLogoUpload} />
           
           <NavHeader />
