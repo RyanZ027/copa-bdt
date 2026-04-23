@@ -298,7 +298,7 @@ const firebaseConfig = {
       const handleRandomizeTeams = () => {
         const currentTeams = teams.map(t => t.teamName);
         if (currentTeams.every(name => name.trim() === '')) {
-          setAlertMessage('Preencha os nomes das equipas nos campos antes de sortear!');
+          setAlertMessage('Preencha os nomes das equipes nos campos antes de sortear!');
           return;
         }
         const shuffledTeams = [...currentTeams];
@@ -1223,7 +1223,7 @@ const firebaseConfig = {
                 <i className="fa-solid fa-clock-rotate-left text-4xl text-stone-600 mb-6"></i>
                 <h2 className="text-2xl font-black text-stone-300 uppercase tracking-wider mb-3">Aguardando Início</h2>
                 <p className="text-sm font-medium uppercase tracking-widest max-w-md mx-auto mb-8 leading-relaxed">
-                  A Copa BDT ainda está na fase de preparação. O organizador está a definir os jogadores e a sortear as equipas!
+                  A Copa BDT ainda está na fase de preparação. O organizador está a definir os jogadores e a sortear as equipes!
                 </p>
                 <button onClick={() => setShowLoginModal(true)} className="mt-4 bg-stone-800 hover:bg-stone-700 text-yellow-500 px-6 py-3 rounded-xl font-bold transition-all border border-stone-700 flex items-center gap-2">
                   <i className="fa-solid fa-key"></i> Sou Organizador
@@ -1277,9 +1277,9 @@ const firebaseConfig = {
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
                     <div className="flex items-center gap-2 text-stone-400 text-xs font-bold uppercase tracking-wide">
                       {teams.length === 4 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 4 Jogadores (Grupos Ida/Volta | 6 Rodadas)</span>}
-                      {teams.length === 5 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 5 Jogadores (Suíço CPR | Top 4 Semi)</span>}
-                      {(teams.length === 6 || teams.length === 7) && <span><i className="fa-solid fa-shield text-orange-500 mr-1"></i> Formato: {teams.length} Jogadores (Suíço CPR | Top 2 Semi, Play-in 3º ao 6º)</span>}
-                      {teams.length === 8 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 8 Jogadores (2 Grupos de 4 com Semente | 3 Rodadas)</span>}
+                      {teams.length === 5 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 5 Jogadores (Formato CPR | Top 4 Semi)</span>}
+                      {(teams.length === 6 || teams.length === 7) && <span><i className="fa-solid fa-shield text-orange-500 mr-1"></i> Formato: {teams.length} Jogadores (Formato CPR | Top 2 Semi, Play-in 3º ao 6º)</span>}
+                      {teams.length === 8 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 8 Jogadores (2 Grupos de 4 Jogadores/Times | 3 Rodadas)</span>}
                     </div>
                   </div>
                   <button onClick={handleStartTournament} className="w-full bg-gradient-to-r from-yellow-600 to-yellow-500 text-black hover:brightness-110 font-black py-5 rounded-2xl shadow-[0_0_20px_rgba(234,179,8,0.3)] transition-all flex items-center justify-center space-x-3 text-xl uppercase tracking-widest">
