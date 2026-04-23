@@ -1,0 +1,1584 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copa BDT - Bonde do Tigrão</title>
+  
+  <!-- Dependências Originais -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+  <!-- Dependências do Firebase (Banco de Dados) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+  <style>
+    body { background-color: #000; color: #e5e7eb; font-family: system-ui, -apple-system, sans-serif; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #0a0a0a; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #292524; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #44403c; }
+    input[type="number"]::-webkit-inner-spin-button, 
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type="number"] { -moz-appearance: textfield; }
+    input[type="number"]:disabled { opacity: 0.7; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useRef, useEffect } = React;
+
+    // =========================================================================
+    // ⚠️ PASSO FUNDAMENTAL: COLOQUE AQUI AS SUAS CREDENCIAIS DO FIREBASE ⚠️
+    // =========================================================================
+    const firebaseConfig = {
+      apiKey: "COLE_AQUI_A_SUA_API_KEY",
+      authDomain: "copa-bdt-XXXX.firebaseapp.com",
+      projectId: "copa-bdt-XXXX",
+      storageBucket: "copa-bdt-XXXX.appspot.com",
+      messagingSenderId: "123456789",
+      appId: "1:123456789:web:abcdef"
+    };
+
+    // Inicializa o Firebase
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.firestore();
+    // =========================================================================
+
+    const INITIAL_SEASONS = [
+      { id: 1, name: 'Season 1', champion: 'Marcelo', placements: [{ pos: 1, name: 'Marcelo' }, { pos: 2, name: 'Monteiro' }, { pos: 3, name: 'Luccas' }, { pos: 4, name: 'Ryan' }], tournamentData: { mode: 'clubes' } },
+      { id: 2, name: 'Season 2', champion: 'Monteiro', placements: [{ pos: 1, name: 'Monteiro' }, { pos: 2, name: 'Ryan' }, { pos: 3, name: 'Daniel' }, { pos: 4, name: 'Kayque' }, { pos: 5, name: 'Luccas' }], tournamentData: { mode: 'clubes' } },
+      { id: 3, name: 'Season 3', champion: 'Marcelo', placements: [{ pos: 1, name: 'Marcelo' }, { pos: 2, name: 'Daniel' }, { pos: 3, name: 'Kayque' }, { pos: 4, name: 'Kaua' }, { pos: 5, name: 'Luccas' }, { pos: 6, name: 'Ryan' }, { pos: 7, name: 'Monteiro' }], tournamentData: { mode: 'clubes' } }
+    ];
+
+    const INITIAL_RANKING = [
+      { name: 'Marcelo', pts: 20, titles: 2 },
+      { name: 'Monteiro', pts: 16, titles: 1 },
+      { name: 'Daniel', pts: 8, titles: 0 },
+      { name: 'Ryan', pts: 8, titles: 0 },
+      { name: 'Luccas', pts: 5, titles: 0 },
+      { name: 'Kayque', pts: 5, titles: 0 },
+      { name: 'Kaua', pts: 2, titles: 0 }
+    ];
+
+    const LOGO_URL = "./logo.png";
+
+    function App() {
+      const [dataLoaded, setDataLoaded] = useState(false);
+      const [syncStatus, setSyncStatus] = useState('saved'); // 'saving', 'saved', 'error'
+
+      const [activeTab, setActiveTab] = useState('ranking'); 
+      const [isOrganizer, setIsOrganizer] = useState(false);
+      const isOrgRef = useRef(isOrganizer); // Referência para ignorar atualizações de nuvem se formos nós a editar
+      
+      const [showLoginModal, setShowLoginModal] = useState(false);
+      const [passwordInput, setPasswordInput] = useState('');
+      const [selectedSeasonDetails, setSelectedSeasonDetails] = useState(null); 
+
+      const fileInputRef = useRef(null);
+      const logoInputRef = useRef(null);
+      const exportRef = useRef(null);
+
+      const [alertMessage, setAlertMessage] = useState('');
+      const [showClearModal, setShowClearModal] = useState(false);
+      const [showResetDefaultModal, setShowResetDefaultModal] = useState(false);
+      const [isExporting, setIsExporting] = useState(false);
+      const [customLogo, setCustomLogo] = useState(LOGO_URL);
+
+      const [pastSeasons, setPastSeasons] = useState([...INITIAL_SEASONS]);
+      const [globalRanking, setGlobalRanking] = useState([...INITIAL_RANKING]);
+
+      const [phase, setPhase] = useState('setup');
+      const [seasonName, setSeasonName] = useState(`Season 4`);
+      const [tournamentMode, setTournamentMode] = useState('clubes'); 
+      const [tournamentFormat, setTournamentFormat] = useState(''); 
+      const [groups, setGroups] = useState({ A: [], B: [] }); 
+
+      const [teams, setTeams] = useState([
+        { id: '0', playerName: '', teamName: '' }, { id: '1', playerName: '', teamName: '' }, { id: '2', playerName: '', teamName: '' }, { id: '3', playerName: '', teamName: '' }
+      ]);
+      const [maxRounds, setMaxRounds] = useState(4);
+      const [rounds, setRounds] = useState([]);
+      const [currentRoundIndex, setCurrentRoundIndex] = useState(-1);
+      const [playoffs, setPlayoffs] = useState(null);
+      const [rankingUpdated, setRankingUpdated] = useState(false);
+
+      // --- EFEITOS DO FIREBASE (NUVEM) ---
+      
+      // Atualiza a referência de organizador
+      useEffect(() => { isOrgRef.current = isOrganizer; }, [isOrganizer]);
+
+      // 1. CARREGAR E OUVIR EM TEMPO REAL DA NUVEM
+      useEffect(() => {
+        const unsubscribe = db.collection('bdt_database').doc('main_state').onSnapshot((doc) => {
+          if (doc.exists) {
+            // Se eu sou o organizador e estou ativamente editando, não quero que a nuvem subscreva meu estado local e cause glitches.
+            if (isOrgRef.current) return;
+
+            const data = doc.data();
+            if (data.pastSeasons) setPastSeasons(data.pastSeasons);
+            if (data.globalRanking) setGlobalRanking(data.globalRanking);
+            if (data.phase) setPhase(data.phase);
+            if (data.seasonName) setSeasonName(data.seasonName);
+            if (data.tournamentMode) setTournamentMode(data.tournamentMode);
+            if (data.tournamentFormat) setTournamentFormat(data.tournamentFormat);
+            if (data.groups) setGroups(data.groups);
+            if (data.teams) setTeams(data.teams);
+            if (data.maxRounds) setMaxRounds(data.maxRounds);
+            if (data.rounds) setRounds(data.rounds);
+            if (data.currentRoundIndex !== undefined) setCurrentRoundIndex(data.currentRoundIndex);
+            if (data.playoffs !== undefined) setPlayoffs(data.playoffs);
+            if (data.rankingUpdated !== undefined) setRankingUpdated(data.rankingUpdated);
+          } else {
+            // Se o banco estiver vazio (primeira vez a rodar), salva os INITIAL_STATES lá.
+            if (isOrgRef.current) {
+               // ... faria o save, mas como não é organizador ainda ao carregar, apenas esperamos.
+            }
+          }
+          setDataLoaded(true);
+        }, (error) => {
+          console.error("Erro ao ler dados da nuvem:", error);
+          if(error.message.includes("Missing or insufficient permissions") && firebaseConfig.apiKey.includes("COLE_AQUI")) {
+             setAlertMessage("Por favor, cole as credenciais do Firebase no código-fonte!");
+          }
+          setDataLoaded(true);
+        });
+
+        return () => unsubscribe();
+      }, []);
+
+      // 2. AUTO-SALVAR (Apenas para o Organizador)
+      useEffect(() => {
+        if (!isOrganizer || !dataLoaded) return;
+        
+        setSyncStatus('saving');
+        const timer = setTimeout(() => {
+          const stateToSave = {
+            pastSeasons, globalRanking, phase, seasonName, tournamentMode,
+            tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated,
+            lastUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          };
+
+          db.collection('bdt_database').doc('main_state').set(stateToSave, { merge: true })
+            .then(() => setSyncStatus('saved'))
+            .catch(err => {
+              console.error("Erro ao salvar:", err);
+              setSyncStatus('error');
+            });
+        }, 1500); // Aguarda 1.5s após o organizador parar de mexer para salvar
+
+        return () => clearTimeout(timer);
+      }, [isOrganizer, dataLoaded, pastSeasons, globalRanking, phase, seasonName, tournamentMode, tournamentFormat, groups, teams, maxRounds, rounds, currentRoundIndex, playoffs, rankingUpdated]);
+
+
+      // --- CRITÉRIO DE DESEMPATE DO RANKING GLOBAL ---
+      const sortedGlobalRanking = useMemo(() => {
+        return [...globalRanking].sort((a, b) => {
+          if (b.pts !== a.pts) return b.pts - a.pts; 
+          if (b.titles !== a.titles) return b.titles - a.titles; 
+          
+          let tiebreaker = 0;
+          const countsA = {};
+          const countsB = {};
+          pastSeasons.forEach(season => {
+            const pA = season.placements?.find(p => p.name.toLowerCase() === a.name.toLowerCase())?.pos;
+            if (pA) countsA[pA] = (countsA[pA] || 0) + 1;
+            const pB = season.placements?.find(p => p.name.toLowerCase() === b.name.toLowerCase())?.pos;
+            if (pB) countsB[pB] = (countsB[pB] || 0) + 1;
+          });
+
+          for (let pos = 2; pos <= 10; pos++) {
+            const cA = countsA[pos] || 0;
+            const cB = countsB[pos] || 0;
+            if (cA !== cB) {
+              tiebreaker = cB - cA;
+              break;
+            }
+          }
+          if (tiebreaker !== 0) return tiebreaker;
+          return a.name.localeCompare(b.name);
+        });
+      }, [globalRanking, pastSeasons]);
+
+      // --- FUNÇÕES DE SISTEMA ---
+      const handleClearRanking = () => setShowClearModal(true);
+      const handleResetToDefault = () => setShowResetDefaultModal(true);
+      const confirmClearRanking = () => { setGlobalRanking([]); setPastSeasons([]); setShowClearModal(false); };
+      const confirmResetToDefault = () => { setGlobalRanking([...INITIAL_RANKING]); setPastSeasons([...INITIAL_SEASONS]); setShowResetDefaultModal(false); };
+
+      const handleLogoUpload = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (event) => setCustomLogo(event.target.result);
+          reader.readAsDataURL(file);
+        }
+      };
+
+      const handleExportImage = async () => {
+        if (!exportRef.current) return;
+        setIsExporting(true);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        try {
+          const canvas = await window.html2canvas(exportRef.current, {
+            backgroundColor: '#030b1c', scale: 2, logging: false, useCORS: true, width: 1080, height: 1350,
+            onclone: (clonedDoc) => {
+              const el = clonedDoc.getElementById('premium-export-node');
+              if (el) { el.style.display = 'block'; el.style.position = 'relative'; el.style.left = '0'; el.style.top = '0'; }
+            }
+          });
+          const link = document.createElement('a');
+          link.download = `Ranking_BDT_${new Date().toISOString().split('T')[0]}.png`;
+          link.href = canvas.toDataURL('image/png', 1.0);
+          link.click();
+        } catch (error) { setAlertMessage("Erro ao gerar a imagem do ranking."); } 
+        finally { setIsExporting(false); }
+      };
+
+      const handleRandomizeTeams = () => {
+        const currentTeams = teams.map(t => t.teamName);
+        if (currentTeams.every(name => name.trim() === '')) {
+          setAlertMessage('Preencha os nomes das equipas nos campos antes de sortear!');
+          return;
+        }
+        const shuffledTeams = [...currentTeams];
+        for (let i = shuffledTeams.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffledTeams[i], shuffledTeams[j]] = [shuffledTeams[j], shuffledTeams[i]];
+        }
+        setTeams(teams.map((team, index) => ({ ...team, teamName: shuffledTeams[index] })));
+      };
+
+      const calculateStandings = (teamIdsArray = null) => {
+        let stats = {};
+        teams.forEach(t => {
+          if (!teamIdsArray || teamIdsArray.includes(t.id)) {
+            stats[t.id] = { ...t, pts: 0, wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, gd: 0, byes: 0, opponents: [], matchesPlayed: 0 };
+          }
+        });
+
+        rounds.forEach(round => {
+          round.matches.forEach(match => {
+            if (match.isBye && stats[match.team1]) {
+              stats[match.team1].pts += 3; stats[match.team1].wins += 1; stats[match.team1].gf += 1; stats[match.team1].gd += 1; stats[match.team1].byes += 1; stats[match.team1].matchesPlayed += 1;
+            } else if (match.score1 !== '' && match.score2 !== '' && stats[match.team1] && stats[match.team2]) {
+              const s1 = parseInt(match.score1, 10); const s2 = parseInt(match.score2, 10);
+              stats[match.team1].opponents.push(match.team2); stats[match.team2].opponents.push(match.team1);
+              stats[match.team1].matchesPlayed += 1; stats[match.team2].matchesPlayed += 1;
+              stats[match.team1].gf += s1; stats[match.team1].ga += s2; stats[match.team2].gf += s2; stats[match.team2].ga += s1;
+              stats[match.team1].gd = stats[match.team1].gf - stats[match.team1].ga; stats[match.team2].gd = stats[match.team2].gf - stats[match.team2].ga;
+
+              if (s1 > s2) { stats[match.team1].pts += 3; stats[match.team1].wins += 1; stats[match.team2].losses += 1; }
+              else if (s2 > s1) { stats[match.team2].pts += 3; stats[match.team2].wins += 1; stats[match.team1].losses += 1; } 
+              else { stats[match.team1].pts += 1; stats[match.team2].pts += 1; stats[match.team1].draws += 1; stats[match.team2].draws += 1; }
+            }
+          });
+        });
+
+        return Object.values(stats).sort((a, b) => {
+          if (b.pts !== a.pts) return b.pts - a.pts;       
+          if (b.wins !== a.wins) return b.wins - a.wins;   
+          if (b.gd !== a.gd) return b.gd - a.gd;           
+          if (b.gf !== a.gf) return b.gf - a.gf;           
+          return a.playerName.localeCompare(b.playerName); 
+        });
+      };
+
+      const standings = useMemo(() => calculateStandings(), [teams, rounds]);
+      const standingsA = useMemo(() => calculateStandings(groups.A), [teams, rounds, groups.A]);
+      const standingsB = useMemo(() => calculateStandings(groups.B), [teams, rounds, groups.B]);
+
+      const getSeededTeams = (teamsArray) => {
+        return [...teamsArray].sort((a, b) => {
+           const rankA = sortedGlobalRanking.findIndex(r => r.name.toLowerCase() === a.playerName.trim().toLowerCase());
+           const rankB = sortedGlobalRanking.findIndex(r => r.name.toLowerCase() === b.playerName.trim().toLowerCase());
+           const posA = rankA >= 0 ? rankA : 999;
+           const posB = rankB >= 0 ? rankB : 999;
+           return posA - posB;
+        });
+      };
+
+      const handleStartTournament = () => {
+        const activeTeams = teams.filter(t => t.playerName.trim() !== '' && t.teamName.trim() !== '');
+        if (activeTeams.length < 4 || activeTeams.length > 8) {
+          setAlertMessage('A Copa suporta de 4 a 8 jogadores nesta versão!'); return;
+        }
+        setTeams(activeTeams);
+
+        let format = '';
+        if (activeTeams.length === 4) format = '4_teams';
+        else if (activeTeams.length === 5) format = '5_teams';
+        else if (activeTeams.length === 6 || activeTeams.length === 7) format = '6_7_teams';
+        else if (activeTeams.length === 8) format = '8_teams';
+        
+        setTournamentFormat(format);
+        let pool = getSeededTeams(activeTeams);
+
+        if (format === '4_teams') {
+          setMaxRounds(6); 
+          const t = pool.map(x=>x.id);
+          const r1 = [{id:`m11`, team1: t[0], team2: t[3], score1:'', score2:''}, {id:`m12`, team1: t[1], team2: t[2], score1:'', score2:''}];
+          const r2 = [{id:`m21`, team1: t[0], team2: t[2], score1:'', score2:''}, {id:`m22`, team1: t[3], team2: t[1], score1:'', score2:''}];
+          const r3 = [{id:`m31`, team1: t[0], team2: t[1], score1:'', score2:''}, {id:`m32`, team1: t[2], team2: t[3], score1:'', score2:''}];
+          const r4 = [{id:`m41`, team1: t[3], team2: t[0], score1:'', score2:''}, {id:`m42`, team1: t[2], team2: t[1], score1:'', score2:''}];
+          const r5 = [{id:`m51`, team1: t[2], team2: t[0], score1:'', score2:''}, {id:`m52`, team1: t[1], team2: t[3], score1:'', score2:''}];
+          const r6 = [{id:`m61`, team1: t[1], team2: t[0], score1:'', score2:''}, {id:`m62`, team1: t[3], team2: t[2], score1:'', score2:''}];
+          setRounds([{id:1, matches:r1}, {id:2, matches:r2}, {id:3, matches:r3}, {id:4, matches:r4}, {id:5, matches:r5}, {id:6, matches:r6}]);
+          setCurrentRoundIndex(0);
+        } else if (format === '8_teams') {
+          setMaxRounds(3); 
+          const gA = [pool[0], pool[3], pool[4], pool[7]].filter(Boolean).map(x=>x.id);
+          const gB = [pool[1], pool[2], pool[5], pool[6]].filter(Boolean).map(x=>x.id);
+          setGroups({ A: gA, B: gB });
+          
+          const r1 = [{id:`a1`, team1: gA[0], team2: gA[3], score1:'', score2:''}, {id:`a2`, team1: gA[1], team2: gA[2], score1:'', score2:''},
+                      {id:`b1`, team1: gB[0], team2: gB[3], score1:'', score2:''}, {id:`b2`, team1: gB[1], team2: gB[2], score1:'', score2:''}];
+          const r2 = [{id:`a3`, team1: gA[0], team2: gA[2], score1:'', score2:''}, {id:`a4`, team1: gA[3], team2: gA[1], score1:'', score2:''},
+                      {id:`b3`, team1: gB[0], team2: gB[2], score1:'', score2:''}, {id:`b4`, team1: gB[3], team2: gB[1], score1:'', score2:''}];
+          const r3 = [{id:`a5`, team1: gA[0], team2: gA[1], score1:'', score2:''}, {id:`a6`, team1: gA[2], team2: gA[3], score1:'', score2:''},
+                      {id:`b5`, team1: gB[0], team2: gB[1], score1:'', score2:''}, {id:`b6`, team1: gB[2], team2: gB[3], score1:'', score2:''}];
+          setRounds([{id:1, matches:r1}, {id:2, matches:r2}, {id:3, matches:r3}]);
+          setCurrentRoundIndex(0);
+        } else {
+          setMaxRounds(4); 
+          const nextR = generateSwissRound([], pool, 0);
+          setRounds([nextR]);
+          setCurrentRoundIndex(0);
+        }
+        setPhase('playing');
+      };
+
+      const generateSwissRound = (currRounds, currentStandings, rIndex) => {
+        let newRound = { id: rIndex + 1, matches: [] };
+        let pool = currentStandings.map(t => ({ ...t, opponents: t.opponents || [], byes: t.byes || 0 }));
+
+        if (rIndex === 0) {
+          let half = Math.ceil(pool.length / 2);
+          let topHalf = pool.slice(0, half); let bottomHalf = pool.slice(half);
+          let seededPool = [];
+          while(topHalf.length || bottomHalf.length) {
+              if(topHalf.length) seededPool.push(topHalf.shift());
+              if(bottomHalf.length) seededPool.push(bottomHalf.shift());
+          }
+          pool = seededPool;
+        }
+
+        let availableTeams = [...pool];
+        if (availableTeams.length % 2 !== 0) {
+          let byeCandidates = availableTeams.filter(t => t.byes === 0);
+          if (byeCandidates.length === 0) byeCandidates = availableTeams; 
+          let byeTeam = byeCandidates[Math.floor(Math.random() * byeCandidates.length)];
+          let byeTeamIndex = availableTeams.findIndex(t => t.id === byeTeam.id);
+          availableTeams.splice(byeTeamIndex, 1);
+          newRound.matches.push({ id: `bye-${newRound.id}`, team1: byeTeam.id, team2: null, isBye: true, score1: '', score2: '' });
+        }
+
+        while (availableTeams.length > 1) {
+          let t1 = availableTeams.shift();
+          let t2Index = availableTeams.findIndex(t => !t1.opponents.includes(t.id));
+          if (t2Index !== -1) {
+            let t2 = availableTeams.splice(t2Index, 1)[0];
+            newRound.matches.push({ id: `${t1.id}-${t2.id}-${newRound.id}`, team1: t1.id, team2: t2.id, isBye: false, score1: '', score2: '' });
+          } else {
+            let t2 = availableTeams.shift(); 
+            newRound.matches.push({ id: `${t1.id}-${t2.id}-${newRound.id}-f`, team1: t1.id, team2: t2.id, isBye: false, score1: '', score2: '' });
+          }
+        }
+        return newRound;
+      };
+
+      const handleSwissScoreChange = (rIdx, mIdx, field, val) => {
+        if (!isOrganizer) return;
+        const v = val === '' ? '' : parseInt(val, 10);
+        if (val !== '' && isNaN(v)) return;
+        const newRounds = [...rounds];
+        newRounds[rIdx].matches[mIdx][field] = v;
+        setRounds(newRounds);
+      };
+
+      const isCurrentRoundFinished = () => {
+        if (rounds.length === 0) return false;
+        return rounds[currentRoundIndex].matches.every(m => m.isBye || (m.score1 !== '' && m.score2 !== ''));
+      };
+
+      const advanceRound = () => {
+        if (currentRoundIndex >= maxRounds - 1) {
+          triggerPlayoffs();
+        } else {
+          if (tournamentFormat === '5_teams' || tournamentFormat === '6_7_teams') {
+            const nextRound = generateSwissRound(rounds, standings, currentRoundIndex + 1);
+            setRounds([...rounds, nextRound]);
+          }
+          setCurrentRoundIndex(currentRoundIndex + 1);
+        }
+      };
+
+      const triggerPlayoffs = () => {
+        if (tournamentFormat === '6_7_teams') {
+          setPlayoffs({
+            stage: 'playin',
+            playins: [
+              { team1: standings[2].id, team2: standings[5].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standings[3].id, team2: standings[4].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} } 
+            ],
+            semifinals: [], final: null, thirdPlace: null
+          });
+        } else if (tournamentFormat === '8_teams') {
+          setPlayoffs({
+            stage: 'semifinals',
+            semifinals: [
+              { team1: standingsA[0].id, team2: standingsB[1].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standingsB[0].id, team2: standingsA[1].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+            ],
+            final: null, thirdPlace: null
+          });
+        } else { 
+          setPlayoffs({
+            stage: 'semifinals',
+            semifinals: [
+              { team1: standings[0].id, team2: standings[3].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standings[1].id, team2: standings[2].id, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+            ],
+            final: null, thirdPlace: null
+          });
+        }
+        setPhase('playoffs');
+      };
+
+      const getMatchupStatus = (match) => {
+        if (!match) return { isFinished: false, winner: null, loser: null, isTied: false, agg1: 0, agg2: 0 };
+        const { leg1, leg2, pen } = match;
+        const isSingleLeg = !leg2; 
+
+        if (leg1.s1 === '' || leg1.s2 === '') return { isFinished: false };
+        if (!isSingleLeg && (leg2.s1 === '' || leg2.s2 === '')) return { isFinished: false };
+
+        const agg1 = leg1.s1 + (!isSingleLeg ? leg2.s1 : 0);
+        const agg2 = leg1.s2 + (!isSingleLeg ? leg2.s2 : 0);
+
+        if (agg1 > agg2) return { isFinished: true, winner: match.team1, loser: match.team2, isTied: false, agg1, agg2 };
+        if (agg2 > agg1) return { isFinished: true, winner: match.team2, loser: match.team1, isTied: false, agg1, agg2 };
+
+        if (pen.s1 === '' || pen.s2 === '') return { isFinished: false, isTied: true, agg1, agg2 };
+        if (pen.s1 > pen.s2) return { isFinished: true, winner: match.team1, loser: match.team2, isTied: true, agg1, agg2 };
+        if (pen.s2 > pen.s1) return { isFinished: true, winner: match.team2, loser: match.team1, isTied: true, agg1, agg2 };
+
+        return { isFinished: false, isTied: true, agg1, agg2 }; 
+      };
+
+      const handlePlayoffScore = (mType, idx, leg, field, val) => {
+        if (!isOrganizer) return;
+        const v = val === '' ? '' : parseInt(val, 10);
+        if (val !== '' && isNaN(v)) return;
+        setPlayoffs(prev => {
+          const s = { ...prev };
+          if (mType === 'final' || mType === 'thirdPlace') s[mType][leg][field] = v;
+          else s[mType][idx][leg][field] = v;
+          return s;
+        });
+      };
+
+      const advanceToSemis = () => {
+        const p1 = getMatchupStatus(playoffs.playins[0]);
+        const p2 = getMatchupStatus(playoffs.playins[1]);
+        if (p1.isFinished && p2.isFinished) {
+          setPlayoffs(prev => ({
+            ...prev, stage: 'semifinals',
+            semifinals: [
+              { team1: standings[0].id, team2: p2.winner, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+              { team1: standings[1].id, team2: p1.winner, leg1: {s1: '', s2: ''}, leg2: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+            ]
+          }));
+        }
+      };
+
+      const advanceToFinal = () => {
+        const s1 = getMatchupStatus(playoffs.semifinals[0]);
+        const s2 = getMatchupStatus(playoffs.semifinals[1]);
+        if (s1.isFinished && s2.isFinished) {
+          setPlayoffs(prev => ({
+            ...prev, stage: 'finals',
+            final: { team1: s1.winner, team2: s2.winner, leg1: {s1: '', s2: ''}, pen: {s1: '', s2: ''} },
+            thirdPlace: { team1: s1.loser, team2: s2.loser, leg1: {s1: '', s2: ''}, pen: {s1: '', s2: ''} }
+          }));
+        }
+      };
+
+      const areFinalsFinished = () => {
+        if (!playoffs || !playoffs.final || !playoffs.thirdPlace) return false;
+        return getMatchupStatus(playoffs.final).isFinished && getMatchupStatus(playoffs.thirdPlace).isFinished;
+      };
+
+      const finishTournament = () => {
+        if (rankingUpdated) return;
+        
+        const firstId = getMatchupStatus(playoffs.final).winner;
+        const secondId = getMatchupStatus(playoffs.final).loser;
+        const thirdId = getMatchupStatus(playoffs.thirdPlace).winner;
+        const fourthId = getMatchupStatus(playoffs.thirdPlace).loser;
+
+        const first = getTeamInfo(firstId)?.playerName.trim();
+        const top4Names = [getTeamInfo(firstId), getTeamInfo(secondId), getTeamInfo(thirdId), getTeamInfo(fourthId)].filter(Boolean).map(t=>t.playerName.trim());
+        
+        let allPlacements = [];
+        top4Names.forEach((n, i) => allPlacements.push({pos: i+1, name: n}));
+
+        let allOtherTeams = [];
+        if (tournamentFormat === '8_teams') {
+           const merged = [...standingsA, ...standingsB].sort((a,b) => b.pts - a.pts || b.wins - a.wins || b.gd - a.gd || b.gf - a.gf);
+           allOtherTeams = merged.map(t => t.playerName.trim()).filter(n => !top4Names.includes(n));
+        } else {
+           allOtherTeams = standings.map(t => t.playerName.trim()).filter(n => !top4Names.includes(n));
+        }
+        
+        allOtherTeams.forEach((n, i) => allPlacements.push({pos: top4Names.length + i + 1, name: n}));
+
+        let newRanking = [...globalRanking];
+        allPlacements.forEach(p => {
+           let pts = tournamentMode === 'selecoes' ? 2 : 1; 
+           if (tournamentMode === 'selecoes') {
+             if(p.pos === 1) pts = 20; else if(p.pos === 2) pts = 10; else if(p.pos === 3) pts = 6; else if(p.pos === 4) pts = 4;
+           } else {
+             if(p.pos === 1) pts = 10; else if(p.pos === 2) pts = 5; else if(p.pos === 3) pts = 3; else if(p.pos === 4) pts = 2;
+           }
+           
+           const idx = newRanking.findIndex(r => r.name.toLowerCase() === p.name.toLowerCase());
+           if(idx >= 0) {
+             newRanking[idx].pts += pts;
+             if(p.pos === 1) newRanking[idx].titles += 1;
+           } else {
+             newRanking.push({ name: p.name, pts, titles: p.pos === 1 ? 1 : 0 });
+           }
+        });
+
+        const tournamentData = {
+          mode: tournamentMode, format: tournamentFormat, teams: JSON.parse(JSON.stringify(teams)),
+          rounds: JSON.parse(JSON.stringify(rounds)), playoffs: JSON.parse(JSON.stringify(playoffs)),
+          standings: JSON.parse(JSON.stringify(standings)), standingsA: JSON.parse(JSON.stringify(standingsA)), standingsB: JSON.parse(JSON.stringify(standingsB))
+        };
+
+        const newSeason = { id: pastSeasons.length + 1, name: seasonName, champion: first, placements: allPlacements, tournamentData };
+        const allSeasons = [...pastSeasons, newSeason];
+
+        newRanking.sort((a, b) => {
+           if (b.pts !== a.pts) return b.pts - a.pts;
+           if (b.titles !== a.titles) return b.titles - a.titles;
+           let tiebreaker = 0;
+           const countsA = {}; const countsB = {};
+           allSeasons.forEach(season => {
+             const pA = season.placements?.find(p => p.name.toLowerCase() === a.name.toLowerCase())?.pos;
+             if (pA) countsA[pA] = (countsA[pA] || 0) + 1;
+             const pB = season.placements?.find(p => p.name.toLowerCase() === b.name.toLowerCase())?.pos;
+             if (pB) countsB[pB] = (countsB[pB] || 0) + 1;
+           });
+
+           for (let pos = 2; pos <= 10; pos++) {
+             const cA = countsA[pos] || 0; const cB = countsB[pos] || 0;
+             if (cA !== cB) { tiebreaker = cB - cA; break; }
+           }
+           if (tiebreaker !== 0) return tiebreaker;
+           return a.name.localeCompare(b.name);
+        });
+        
+        setGlobalRanking(newRanking); setPastSeasons(allSeasons); setRankingUpdated(true); setPhase('finished');
+      };
+
+      const resetForNewSeason = () => {
+        setTeams([{ id: '0', playerName: '', teamName: '' }, { id: '1', playerName: '', teamName: '' }, { id: '2', playerName: '', teamName: '' }, { id: '3', playerName: '', teamName: '' }]);
+        setRounds([]); setCurrentRoundIndex(-1); setPlayoffs(null); setRankingUpdated(false); setSeasonName(`Season ${pastSeasons.length + 1}`); setPhase('setup'); setActiveTab('tournament');
+      };
+
+      const handleAddTeam = () => setTeams([...teams, { id: Date.now().toString(), playerName: '', teamName: '' }]);
+      
+      const handleRemoveTeam = (id) => {
+        if (teams.length <= 4) { setAlertMessage("O mínimo é 4 jogadores!"); return; }
+        setTeams(teams.filter(t => t.id !== id));
+      };
+      
+      const handleTeamDataChange = (index, field, value) => {
+        const newTeams = [...teams];
+        newTeams[index][field] = value;
+        setTeams(newTeams);
+      };
+
+      // --- SUB-COMPONENTES DE INTERFACE ---
+      const getTeamInfo = (id) => teams.find(t => t.id === id);
+      
+      const TeamDisplay = ({ id, align = 'left', dark = false }) => {
+        const info = getTeamInfo(id);
+        if (!info) return <span className="text-stone-400">Desconhecido</span>;
+        return (
+          <div className={`flex flex-col ${align === 'right' ? 'items-end text-right' : align === 'center' ? 'items-center text-center' : 'items-start text-left'}`}>
+            <span className={`font-bold leading-tight ${dark ? 'text-yellow-50' : 'text-stone-200'}`}>{info.playerName}</span>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded mt-1 uppercase tracking-wider ${dark ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' : 'bg-stone-800 text-stone-400 border border-stone-700'}`}>
+              {info.teamName}
+            </span>
+          </div>
+        );
+      };
+
+      const PastTeamDisplay = ({ id, pastTeams, align = 'left' }) => {
+        const info = pastTeams.find(t => t.id === id);
+        if (!info) return <span className="text-stone-500">Desconhecido</span>;
+        return (
+          <div className={`flex flex-col ${align === 'right' ? 'items-end text-right' : align === 'center' ? 'items-center text-center' : 'items-start text-left'}`}>
+            <span className="font-bold text-stone-200 text-sm leading-tight">{info.playerName}</span>
+            <span className="text-[9px] font-bold text-stone-500 uppercase">{info.teamName}</span>
+          </div>
+        );
+      };
+
+      const renderReadOnlyPlayoffMatch = (matchObj, title, pastTeams) => {
+        if(!matchObj) return null;
+        return (
+          <div className="mb-4 bg-[#121212] border border-stone-800 rounded-xl p-4">
+            <h4 className="text-xs font-bold text-stone-500 uppercase tracking-widest mb-3 border-b border-stone-800 pb-2">{title}</h4>
+            <div className="flex items-center justify-between gap-2">
+               <div className="flex-1"><PastTeamDisplay id={matchObj.team1} pastTeams={pastTeams} align="right"/></div>
+               <div className="flex flex-col items-center gap-1 bg-[#050505] p-2 rounded-lg border border-stone-800 min-w-[80px]">
+                  {matchObj.leg1 && <div className="text-xs font-bold text-stone-300">IDA: <span className="text-white">{matchObj.leg1.s1} x {matchObj.leg1.s2}</span></div>}
+                  {matchObj.leg2 && <div className="text-xs font-bold text-stone-300">VOLTA: <span className="text-white">{matchObj.leg2.s1} x {matchObj.leg2.s2}</span></div>}
+                  {matchObj.pen?.s1 !== '' && matchObj.pen?.s1 !== undefined && <div className="text-[10px] font-bold text-yellow-600 mt-1 bg-yellow-900/20 px-2 rounded border border-yellow-700/30">PÊN: {matchObj.pen.s1} x {matchObj.pen.s2}</div>}
+               </div>
+               <div className="flex-1"><PastTeamDisplay id={matchObj.team2} pastTeams={pastTeams} align="left"/></div>
+            </div>
+          </div>
+        );
+      };
+
+      const StandingsTableUI = ({ title, data }) => (
+        <div className="bg-[#0a0a0a] p-5 rounded-2xl shadow-xl border border-stone-800 flex-1">
+          <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2 uppercase tracking-wide">
+            <i className="fa-solid fa-users text-yellow-600"></i> {title}
+          </h2>
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full text-sm text-left">
+              <thead className="text-[10px] text-stone-500 bg-[#121212] uppercase border-b border-stone-800 font-bold">
+                <tr>
+                  <th className="px-2 py-3 rounded-tl-lg">#</th><th className="px-2 py-3">Equipa</th><th className="px-2 py-3 text-center text-yellow-500">Pts</th>
+                  <th className="px-2 py-3 text-center hidden sm:table-cell">J</th><th className="px-2 py-3 text-center">V</th>
+                  <th className="px-2 py-3 text-center hidden sm:table-cell">E</th><th className="px-2 py-3 text-center hidden sm:table-cell">D</th><th className="px-2 py-3 text-center">SG</th>
+                </tr>
+              </thead>
+              <tbody className="text-xs">
+                {data.map((team, idx) => {
+                  let rowClass = '', badgeClass = 'bg-[#1a1a1a] text-stone-500';
+                  if (tournamentFormat === '8_teams') {
+                     if(idx < 2) { rowClass = 'bg-yellow-900/10'; badgeClass = 'bg-yellow-600 text-black'; }
+                  } else if (tournamentFormat === '6_7_teams') {
+                     if(idx < 2) { rowClass = 'bg-yellow-900/10'; badgeClass = 'bg-yellow-600 text-black'; }
+                     else if (idx < 6) { rowClass = 'bg-orange-900/10'; badgeClass = 'bg-orange-600 text-white'; }
+                  } else {
+                     if(idx < 4) { rowClass = 'bg-yellow-900/10'; badgeClass = 'bg-yellow-600 text-black'; }
+                  }
+
+                  return (
+                    <tr key={team.id} className={`border-b border-stone-800/50 hover:bg-[#121212] transition-colors ${rowClass}`}>
+                      <td className="px-2 py-3 font-medium"><span className={`w-5 h-5 rounded flex items-center justify-center font-black ${badgeClass}`}>{idx + 1}</span></td>
+                      <td className="px-2 py-2">
+                        <div className="font-bold text-stone-200 truncate max-w-[100px] sm:max-w-[120px]">{team.playerName}</div>
+                        <div className="text-[10px] text-stone-500 truncate max-w-[100px] sm:max-w-[120px]">{team.teamName}</div>
+                      </td>
+                      <td className="px-2 py-3 text-center font-black text-yellow-500 text-sm">{team.pts}</td>
+                      <td className="px-2 py-3 text-center text-stone-600 hidden sm:table-cell">{team.matchesPlayed}</td>
+                      <td className="px-2 py-3 text-center text-emerald-500 font-semibold">{team.wins}</td>
+                      <td className="px-2 py-3 text-center text-stone-600 hidden sm:table-cell">{team.draws}</td>
+                      <td className="px-2 py-3 text-center text-red-600 hidden sm:table-cell">{team.losses}</td>
+                      <td className="px-2 py-3 text-center font-semibold text-stone-400">{team.gd > 0 ? `+${team.gd}` : team.gd}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+
+      const renderModals = () => (
+        <React.Fragment>
+          {alertMessage && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+              <div className="bg-[#121212] border border-yellow-500/50 rounded-2xl p-6 max-w-md w-full shadow-[0_0_30px_rgba(234,179,8,0.2)] text-center">
+                <i className="fa-solid fa-circle-exclamation text-4xl text-yellow-500 mb-4 block"></i>
+                <p className="text-stone-200 mb-6 font-bold text-lg">{alertMessage}</p>
+                <button onClick={() => setAlertMessage('')} className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-yellow-600 to-yellow-500 text-black hover:brightness-110 shadow-[0_0_15px_rgba(234,179,8,0.4)]">Entendido</button>
+              </div>
+            </div>
+          )}
+          {showClearModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+              <div className="bg-[#121212] border border-red-500/50 rounded-2xl p-6 max-w-md w-full shadow-[0_0_30px_rgba(220,38,38,0.2)]">
+                <div className="flex items-center gap-3 mb-4">
+                  <i className="fa-solid fa-triangle-exclamation text-3xl text-red-500"></i>
+                  <h3 className="text-xl font-black text-white uppercase tracking-wider">Atenção!</h3>
+                </div>
+                <p className="text-stone-300 mb-6 font-medium">Tem a certeza que deseja apagar todo o ranking e histórico de temporadas da Nuvem? Isto não pode ser desfeito.</p>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setShowClearModal(false)} className="px-5 py-2.5 rounded-xl font-bold bg-stone-800 text-stone-300 hover:bg-stone-700 border border-stone-700">Cancelar</button>
+                  <button onClick={confirmClearRanking} className="px-5 py-2.5 rounded-xl font-bold bg-red-600 text-white hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.4)]">Apagar Tudo</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {showResetDefaultModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+              <div className="bg-[#121212] border border-orange-500/50 rounded-2xl p-6 max-w-md w-full shadow-[0_0_30px_rgba(249,115,22,0.2)]">
+                <div className="flex items-center gap-3 mb-4">
+                  <i className="fa-solid fa-rotate-left text-3xl text-orange-500"></i>
+                  <h3 className="text-xl font-black text-white uppercase tracking-wider">Restaurar Padrão</h3>
+                </div>
+                <p className="text-stone-300 mb-6 font-medium">Tem a certeza que deseja restaurar o ranking para a pontuação original (Seasons 1 a 3)?</p>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setShowResetDefaultModal(false)} className="px-5 py-2.5 rounded-xl font-bold bg-stone-800 text-stone-300 hover:bg-stone-700 border border-stone-700">Cancelar</button>
+                  <button onClick={confirmResetToDefault} className="px-5 py-2.5 rounded-xl font-bold bg-orange-600 text-white hover:bg-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.4)]">Restaurar</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {showLoginModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+              <div className="bg-[#121212] border border-yellow-500/50 rounded-2xl p-6 max-w-md w-full shadow-[0_0_30px_rgba(234,179,8,0.2)]">
+                <div className="flex items-center gap-3 mb-6">
+                  <i className="fa-solid fa-lock text-3xl text-yellow-500"></i>
+                  <h3 className="text-xl font-black text-white uppercase tracking-wider">Acesso Restrito</h3>
+                </div>
+                <input type="password" placeholder="Palavra-passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} className="w-full bg-[#1a1a1a] border border-stone-700 rounded-lg px-4 py-3 text-white font-bold focus:ring-2 focus:ring-yellow-600 outline-none mb-6" />
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setShowLoginModal(false)} className="px-5 py-2.5 rounded-xl font-bold bg-stone-800 text-stone-300 hover:bg-stone-700 border border-stone-700">Cancelar</button>
+                  <button onClick={() => {
+                    if(passwordInput.toLowerCase() === 'cpr') { setIsOrganizer(true); setShowLoginModal(false); setPasswordInput(''); setAlertMessage('Acesso concedido! Suas alterações serão salvas na nuvem automaticamente.'); }
+                    else { setAlertMessage('Palavra-passe incorreta!'); }
+                  }} className="px-5 py-2.5 rounded-xl font-bold bg-yellow-600 text-black hover:bg-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.4)]">Entrar</button>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {selectedSeasonDetails && (
+            <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-[110] p-4 sm:p-6">
+              <div className="bg-[#0a0a0a] border border-stone-800 rounded-3xl p-6 md:p-8 max-w-4xl w-full h-[90vh] flex flex-col shadow-2xl">
+                <div className="flex justify-between items-center mb-6 border-b border-stone-800 pb-4 shrink-0">
+                  <div>
+                    <h2 className="text-2xl font-black text-yellow-500 uppercase tracking-widest flex items-center gap-3"><i className="fa-solid fa-book-open"></i> {selectedSeasonDetails.name}</h2>
+                    <p className="text-sm text-stone-400 font-bold uppercase mt-1">Campeão: <span className="text-white">{selectedSeasonDetails.champion}</span> | Modo: <span className="text-white">{selectedSeasonDetails.tournamentData?.mode === 'selecoes' ? 'Seleções' : 'Clubes'}</span></p>
+                  </div>
+                  <button onClick={() => setSelectedSeasonDetails(null)} className="text-stone-500 hover:text-red-500 transition-colors text-3xl"><i className="fa-solid fa-xmark"></i></button>
+                </div>
+                
+                <div className="overflow-y-auto custom-scrollbar flex-1 pr-2 space-y-8">
+                  <div className="space-y-4">
+                    <h3 className="text-lg font-black text-white uppercase border-l-4 border-yellow-600 pl-3">Fase de Grupos / Regular</h3>
+                    {selectedSeasonDetails.tournamentData?.rounds?.map((round, rIdx) => (
+                      <div key={rIdx} className="bg-[#121212] rounded-xl p-4 border border-stone-800">
+                        <h4 className="text-xs font-bold text-stone-500 uppercase mb-3">Rodada {rIdx + 1}</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {round.matches.map((m, mIdx) => (
+                            <div key={mIdx} className={`p-3 rounded-lg border ${m.isBye ? 'bg-yellow-900/10 border-yellow-900/30' : 'bg-[#050505] border-stone-800'} flex items-center justify-between`}>
+                              {m.isBye ? (
+                                <>
+                                  <PastTeamDisplay id={m.team1} pastTeams={selectedSeasonDetails.tournamentData.teams} />
+                                  <span className="text-[10px] font-bold bg-yellow-900/30 text-yellow-500 px-2 py-1 rounded border border-yellow-800/50">BYE</span>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="flex-1"><PastTeamDisplay id={m.team1} pastTeams={selectedSeasonDetails.tournamentData.teams} align="right" /></div>
+                                  <div className="px-3 text-center font-black text-white text-lg">{m.score1} <span className="text-stone-600 text-sm">x</span> {m.score2}</div>
+                                  <div className="flex-1"><PastTeamDisplay id={m.team2} pastTeams={selectedSeasonDetails.tournamentData.teams} align="left" /></div>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedSeasonDetails.tournamentData?.playoffs && (
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-black text-white uppercase border-l-4 border-yellow-600 pl-3">Fase Final (Mata-Mata)</h3>
+                      
+                      {selectedSeasonDetails.tournamentData.playoffs.playins?.length > 0 && (
+                        <div className="grid md:grid-cols-2 gap-4">
+                          {selectedSeasonDetails.tournamentData.playoffs.playins.map((match, idx) => 
+                            renderReadOnlyPlayoffMatch(match, `Play-in ${idx + 1}`, selectedSeasonDetails.tournamentData.teams)
+                          )}
+                        </div>
+                      )}
+
+                      {selectedSeasonDetails.tournamentData.playoffs.semifinals?.length > 0 && (
+                        <div className="grid md:grid-cols-2 gap-4">
+                          {selectedSeasonDetails.tournamentData.playoffs.semifinals.map((match, idx) => 
+                            renderReadOnlyPlayoffMatch(match, `Semifinal ${idx + 1}`, selectedSeasonDetails.tournamentData.teams)
+                          )}
+                        </div>
+                      )}
+
+                      <div className="grid md:grid-cols-2 gap-4">
+                        {renderReadOnlyPlayoffMatch(selectedSeasonDetails.tournamentData.playoffs.thirdPlace, "Disputa de 3º Lugar", selectedSeasonDetails.tournamentData.teams)}
+                        {renderReadOnlyPlayoffMatch(selectedSeasonDetails.tournamentData.playoffs.final, "⭐ Grande Final ⭐", selectedSeasonDetails.tournamentData.teams)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </React.Fragment>
+      );
+
+      const NavHeader = () => (
+        <div className="max-w-4xl mx-auto mb-10 mt-2 flex flex-col items-center relative">
+          {!isOrganizer ? (
+            <button onClick={() => setShowLoginModal(true)} className="absolute top-0 right-4 md:right-0 text-stone-600 hover:text-yellow-500 transition-colors" title="Acesso Organizador"><i className="fa-solid fa-lock"></i></button>
+          ) : (
+            <div className="absolute top-0 right-4 md:right-0 flex items-center gap-4">
+              <span className={`text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 ${syncStatus === 'saving' ? 'text-blue-400' : syncStatus === 'saved' ? 'text-emerald-500' : 'text-red-500'}`}>
+                {syncStatus === 'saving' ? <><i className="fa-solid fa-cloud-arrow-up animate-pulse"></i> Salvando...</> : syncStatus === 'saved' ? <><i className="fa-solid fa-cloud-check"></i> Na Nuvem</> : <><i className="fa-solid fa-cloud-xmark"></i> Erro Sync</>}
+              </span>
+              <button onClick={() => {setIsOrganizer(false); setAlertMessage('Sessão encerrada.');}} className="text-yellow-500 hover:text-red-500 transition-colors" title="Sair do Modo Organizador"><i className="fa-solid fa-unlock"></i></button>
+            </div>
+          )}
+          <div className={`relative group mb-6 flex items-center justify-center min-h-[96px] ${isOrganizer ? 'cursor-pointer' : ''}`} onClick={() => isOrganizer && logoInputRef.current.click()} title={isOrganizer ? "Clique para alterar o logótipo" : "Copa BDT Oficial"}>
+            <img src={customLogo} alt="Logo" className="h-24 max-w-full object-contain drop-shadow-[0_0_15px_rgba(202,138,4,0.3)] transition-transform group-hover:scale-105" onError={(e) => { e.target.onerror=null; e.target.style.display='none'; }} />
+            {isOrganizer && (
+              <div className="absolute inset-0 bg-black/50 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm">
+                <i className="fa-solid fa-camera text-yellow-500 text-2xl drop-shadow-lg"></i>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-center flex-wrap gap-2 bg-[#0a0a0a] p-1.5 rounded-full border border-stone-800 w-fit mx-auto shadow-xl">
+            <button onClick={() => setActiveTab('tournament')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'tournament' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
+              <i className="fa-solid fa-play"></i> Torneio
+            </button>
+            <button onClick={() => setActiveTab('ranking')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'ranking' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
+              <i className="fa-solid fa-trophy"></i> Ranking
+            </button>
+            <button onClick={() => setActiveTab('statistics')} className={`px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold uppercase tracking-wide transition-all flex items-center gap-2 ${activeTab === 'statistics' ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black shadow-md' : 'text-stone-400 hover:text-stone-200'}`}>
+              <i className="fa-solid fa-chart-line"></i> Estatísticas
+            </button>
+          </div>
+        </div>
+      );
+
+      const renderStatistics = () => {
+        const allPlayersSet = new Set();
+        pastSeasons.forEach(s => {
+          if (s.placements) s.placements.forEach(p => allPlayersSet.add(p.name));
+        });
+        
+        const allPlayersList = Array.from(allPlayersSet).sort((a, b) => {
+          const ptsA = sortedGlobalRanking.find(r => r.name === a)?.pts || 0;
+          const ptsB = sortedGlobalRanking.find(r => r.name === b)?.pts || 0;
+          return ptsB - ptsA;
+        });
+
+        const chartColors = ['#facc15', '#60a5fa', '#f43f5e', '#34d399', '#a78bfa', '#fb923c', '#2dd4bf', '#f472b6', '#94a3b8', '#c084fc'];
+        const maxPointsOverall = Math.max(...allPlayersList.map(p => sortedGlobalRanking.find(r => r.name === p)?.pts || 10), 10);
+        const numSeasons = pastSeasons.length;
+
+        const getX = (index) => {
+          if (numSeasons <= 1) return 400; 
+          return (index / (numSeasons - 1)) * 800;
+        };
+
+        const getPointsHistory = (playerName) => {
+          let cumulative = 0;
+          return pastSeasons.map(s => {
+             const pl = s.placements?.find(x => x.name === playerName);
+             if (pl) {
+                const mode = s.tournamentData?.mode || 'clubes';
+                let addedPts = mode === 'selecoes' ? 2 : 1; 
+                if(mode === 'selecoes') {
+                   if (pl.pos === 1) addedPts = 20; else if (pl.pos === 2) addedPts = 10; else if (pl.pos === 3) addedPts = 6; else if (pl.pos === 4) addedPts = 4;
+                } else {
+                   if (pl.pos === 1) addedPts = 10; else if (pl.pos === 2) addedPts = 5; else if (pl.pos === 3) addedPts = 3; else if (pl.pos === 4) addedPts = 2;
+                }
+                cumulative += addedPts;
+             }
+             return cumulative;
+          });
+        };
+
+        return (
+          <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in">
+            <div className="bg-[#0a0a0a] rounded-3xl shadow-xl border border-stone-800 p-8">
+              <h2 className="text-2xl font-black text-white flex items-center gap-3 uppercase tracking-wider mb-2">
+                <i className="fa-solid fa-arrow-trend-up text-yellow-500"></i> Evolução de Pontos
+              </h2>
+              <p className="text-sm font-medium text-stone-500 uppercase tracking-widest mb-10">Gráfico de progressão cumulativa</p>
+
+              {numSeasons > 0 ? (
+                <div className="flex flex-col">
+                  <div className="w-full h-[350px] relative mt-4 ml-2">
+                    <svg viewBox="-20 -20 1000 380" className="w-full h-full overflow-visible">
+                      {pastSeasons.map((s, i) => (
+                        <g key={`grid-${i}`}>
+                          <line x1={getX(i)} y1={0} x2={getX(i)} y2={300} stroke="#1c1917" strokeWidth="2" strokeDasharray="4 4" />
+                          <text x={getX(i)} y={335} fill="#78716c" fontSize="14" textAnchor="middle" fontWeight="bold" className="uppercase tracking-widest">{s.name}</text>
+                        </g>
+                      ))}
+
+                      {allPlayersList.map((p, pIdx) => {
+                        const history = getPointsHistory(p);
+                        const color = chartColors[pIdx % chartColors.length];
+                        const pointsPath = history.map((pts, i) => `${getX(i)},${300 - (pts / maxPointsOverall) * 300}`).join(' L ');
+                        const lastPts = history[history.length - 1];
+                        const lastY = 300 - (lastPts / maxPointsOverall) * 300;
+
+                        return (
+                          <g key={`line-${p}`} className="group cursor-pointer transition-opacity hover:opacity-100 opacity-80 hover:z-10">
+                            <path d={`M ${pointsPath}`} fill="none" stroke={color} strokeWidth="4" className="drop-shadow-[0_0_5px_rgba(0,0,0,0.5)] transition-all" />
+                            {history.map((pts, i) => (
+                              <circle key={`dot-${p}-${i}`} cx={getX(i)} cy={300 - (pts / maxPointsOverall) * 300} r="5" fill="#000" stroke={color} strokeWidth="3" />
+                            ))}
+                            <text x={getX(numSeasons - 1) + 15} y={lastY} fill={color} fontSize="14" dominantBaseline="middle" fontWeight="black" className="uppercase tracking-wide opacity-0 group-hover:opacity-100 transition-opacity">
+                              {p} ({lastPts})
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                  
+                  <div className="flex flex-wrap justify-center gap-3 mt-12 pt-6 border-t border-stone-800/50">
+                    {allPlayersList.map((p, pIdx) => {
+                      const color = chartColors[pIdx % chartColors.length];
+                      return (
+                        <div key={`legend-${p}`} className="flex items-center gap-2 bg-[#121212] px-3 py-1.5 rounded-lg border border-stone-800 shadow-sm transition-colors hover:border-stone-600">
+                          <div className="w-3 h-3 rounded-full shadow-inner" style={{ backgroundColor: color }}></div>
+                          <span className="text-xs font-bold text-stone-300 uppercase tracking-wide">{p}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="w-full h-[350px] relative mt-4 ml-2 flex items-center justify-center text-stone-600 font-semibold border-2 border-dashed border-stone-800 rounded-xl">
+                  Jogue uma temporada para ver o gráfico.
+                </div>
+              )}
+            </div>
+
+            <div className="bg-[#0a0a0a] rounded-3xl shadow-xl border border-stone-800 p-8">
+              <h2 className="text-xl font-black text-white flex items-center gap-3 uppercase tracking-wider mb-2">
+                <i className="fa-solid fa-calendar-days text-yellow-500"></i> Tabela de Posições
+              </h2>
+              <p className="text-xs font-medium text-stone-500 uppercase tracking-widest mb-6">Em qual lugar cada jogador terminou por Temporada</p>
+
+              <div className="overflow-x-auto custom-scrollbar">
+                <table className="w-full text-sm text-left">
+                  <thead className="text-[10px] text-stone-400 bg-[#121212] uppercase border-b border-stone-800 font-bold">
+                    <tr>
+                      <th className="px-4 py-4 rounded-tl-lg">Jogador</th>
+                      {pastSeasons.map(s => (
+                        <th key={`th-${s.id}`} className="px-3 py-4 text-center whitespace-nowrap">{s.name}</th>
+                      ))}
+                      <th className="px-4 py-4 rounded-tr-lg text-center text-yellow-500">Pts Totais</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-sm">
+                    {allPlayersList.length === 0 && (
+                       <tr><td colSpan={pastSeasons.length + 2} className="text-center py-6 text-stone-600 font-semibold">Nenhuma partida registada.</td></tr>
+                    )}
+                    {allPlayersList.map(p => {
+                      const totalPts = sortedGlobalRanking.find(r => r.name === p)?.pts || 0;
+                      return (
+                        <tr key={`tr-${p}`} className="border-b border-stone-800/50 hover:bg-[#121212] transition-colors">
+                          <td className="px-4 py-3 font-bold text-stone-200 uppercase tracking-wide">{p}</td>
+                          {pastSeasons.map(s => {
+                            const placement = s.placements?.find(x => x.name === p);
+                            let badgeClass = 'text-stone-600 font-bold'; 
+                            let displayPos = '-';
+                            if (placement) {
+                              displayPos = `${placement.pos}º`;
+                              if (placement.pos === 1) badgeClass = 'bg-yellow-900/30 text-yellow-500 border border-yellow-700/50 shadow-[0_0_10px_rgba(234,179,8,0.2)]';
+                              else if (placement.pos === 2) badgeClass = 'bg-stone-800 text-stone-300 border border-stone-600';
+                              else if (placement.pos === 3) badgeClass = 'bg-orange-900/30 text-orange-500 border border-orange-700/50';
+                              else if (placement.pos === 4) badgeClass = 'bg-stone-800/50 text-stone-400 border border-stone-700';
+                              else badgeClass = 'bg-[#1a1a1a] text-stone-500 border border-stone-800';
+                            }
+                            return (
+                              <td key={`td-${p}-${s.id}`} className="px-3 py-3 text-center">
+                                <span className={`inline-block w-9 py-1.5 rounded-md text-xs font-black ${badgeClass}`}>{displayPos}</span>
+                              </td>
+                            )
+                          })}
+                          <td className="px-4 py-3 text-center font-black text-yellow-500">{totalPts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderRanking = () => {
+        return (
+          <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in">
+            <div className="lg:col-span-7 bg-[#0a0a0a] rounded-3xl p-8 border border-stone-800 relative shadow-2xl">
+              <div className="absolute inset-0 bg-gradient-to-br from-yellow-900/10 to-black z-0 pointer-events-none"></div>
+              <div className="relative z-10">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                  <h2 className="text-2xl font-black text-white uppercase tracking-wider"><i className="fa-solid fa-chart-column text-yellow-500 mr-2"></i> Global</h2>
+                  {isOrganizer && (
+                    <div className="flex gap-2">
+                      <button onClick={() => fileInputRef.current.click()} className="bg-[#171717] hover:bg-[#262626] text-stone-300 p-2 rounded-lg transition-all border border-stone-800" title="Carregar Backup Manual"><i className="fa-solid fa-upload"></i></button>
+                      <button onClick={handleExportData} className="bg-[#171717] hover:bg-[#262626] text-blue-500 p-2 rounded-lg transition-all border border-stone-800" title="Salvar Backup Manual"><i className="fa-solid fa-download"></i></button>
+                      <button onClick={handleExportImage} disabled={isExporting} className="bg-[#171717] hover:bg-[#262626] text-emerald-500 p-2 rounded-lg transition-all border border-stone-800" title="Gerar Imagem">
+                        {isExporting ? <i className="fa-solid fa-arrows-rotate animate-spin"></i> : <i className="fa-solid fa-camera"></i>}
+                      </button>
+                      <button onClick={handleResetToDefault} className="bg-orange-900/20 hover:bg-orange-900/40 text-orange-500 p-2 rounded-lg transition-all border border-orange-900/30 ml-2" title="Restaurar Padrão"><i className="fa-solid fa-rotate-left"></i></button>
+                      <button onClick={handleClearRanking} className="bg-red-900/20 hover:bg-red-900/40 text-red-500 p-2 rounded-lg transition-all border border-red-900/30" title="Apagar Tudo na Nuvem"><i className="fa-solid fa-trash-can"></i></button>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-3">
+                  {sortedGlobalRanking.length === 0 && (
+                    <div className="text-center py-10 text-stone-600 font-semibold border-2 border-dashed border-stone-800 rounded-2xl">Nenhum jogador no ranking.</div>
+                  )}
+                  {sortedGlobalRanking.map((p, idx) => (
+                    <div key={idx} className="flex items-center justify-between bg-[#121212] border border-stone-800 rounded-2xl p-4 relative overflow-hidden group hover:border-yellow-900/50 transition-colors">
+                      {idx === 0 && <div className="absolute left-0 w-1.5 h-full bg-yellow-500"></div>}
+                      {idx === 1 && <div className="absolute left-0 w-1.5 h-full bg-stone-300"></div>}
+                      {idx === 2 && <div className="absolute left-0 w-1.5 h-full bg-orange-500"></div>}
+                      <div className="flex items-center gap-4 pl-3">
+                        <span className={`text-2xl font-black w-8 text-center ${idx===0?'text-yellow-500':idx===1?'text-stone-300':idx===2?'text-orange-500':'text-stone-600'}`}>{idx+1}</span>
+                        <div>
+                          <div className="font-bold text-lg text-stone-100 uppercase">{p.name}</div>
+                          {p.titles > 0 && (
+                            <div className="flex items-center gap-1 mt-1 text-xs font-bold text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded border border-yellow-500/20 w-fit"><i className="fa-solid fa-trophy"></i> {p.titles} TÍTULO{p.titles>1?'S':''}</div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right text-2xl font-black text-yellow-500">{p.pts} <span className="text-xs text-stone-500">PTS</span></div>
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="mt-8 p-5 bg-[#121212] rounded-xl border border-stone-800">
+                  <p className="text-[10px] text-stone-500 font-bold uppercase tracking-widest mb-4 text-center"><i className="fa-solid fa-book mr-1"></i> Regulamento de Pontuação</p>
+                  <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap justify-center gap-2 text-center text-[10px] font-bold">
+                        <div className="bg-stone-900 border border-stone-800 px-3 py-1.5 rounded-lg text-stone-400 w-full mb-1 shadow-inner">MODO CLUBES</div>
+                        <div className="bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 rounded px-3 py-1">🏆 1º: 10 pts</div>
+                        <div className="bg-stone-300/10 border border-stone-300/30 text-stone-300 rounded px-3 py-1">🥈 2º: 5 pts</div>
+                        <div className="bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded px-3 py-1">🥉 3º: 3 pts</div>
+                        <div className="bg-stone-800/50 border border-stone-700/50 text-stone-400 rounded px-3 py-1">4º: 2 pts</div>
+                        <div className="bg-[#1a1a1a] border border-stone-800 rounded px-3 py-1 text-stone-500">Part: 1 pt</div>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-2 text-center text-[10px] font-bold mt-2">
+                        <div className="bg-stone-900 border border-stone-800 px-3 py-1.5 rounded-lg text-stone-400 w-full mb-1 shadow-inner">MODO SELEÇÕES (PONTOS DOBRADOS)</div>
+                        <div className="bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 rounded px-3 py-1">🏆 1º: 20 pts</div>
+                        <div className="bg-stone-300/10 border border-stone-300/30 text-stone-300 rounded px-3 py-1">🥈 2º: 10 pts</div>
+                        <div className="bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded px-3 py-1">🥉 3º: 6 pts</div>
+                        <div className="bg-stone-800/50 border border-stone-700/50 text-stone-400 rounded px-3 py-1">4º: 4 pts</div>
+                        <div className="bg-[#1a1a1a] border border-stone-800 rounded px-3 py-1 text-stone-500">Part: 2 pts</div>
+                      </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-5 bg-[#0a0a0a] rounded-3xl p-8 border border-stone-800 shadow-xl">
+              <h2 className="text-xl font-black text-white flex items-center gap-3 uppercase tracking-wider mb-6"><i className="fa-solid fa-calendar-days text-yellow-600"></i> Histórico</h2>
+              <div className="space-y-4">
+                {pastSeasons.length === 0 && <div className="text-center py-6 text-stone-600 font-medium">Nenhum histórico registado.</div>}
+                {pastSeasons.slice().reverse().map((season, idx) => (
+                  <div key={season.id} className="bg-[#121212] p-5 rounded-2xl border border-stone-800 flex flex-col gap-3 relative overflow-hidden group hover:border-yellow-900/50 transition-all">
+                    {idx === 0 && pastSeasons.length > 0 && <div className="absolute top-0 right-0 bg-yellow-600 text-black text-[10px] font-bold px-2 py-1 rounded-bl-lg uppercase">Mais Recente</div>}
+                    <div className="text-sm font-black text-stone-500 uppercase tracking-widest flex items-center justify-between">
+                      <span>{season.name}</span>
+                      <span className="text-[9px] bg-[#050505] text-stone-500 border border-stone-800 px-2 py-0.5 rounded">{season.tournamentData?.mode === 'selecoes' ? 'SELEÇÕES' : 'CLUBES'}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="bg-gradient-to-br from-yellow-600 to-yellow-800 p-2.5 rounded-xl border border-yellow-500/50"><i className="fa-solid fa-trophy text-black text-xl"></i></div>
+                      <div>
+                        <div className="text-[10px] text-yellow-600 font-bold uppercase tracking-widest">Campeão</div>
+                        <div className="text-lg font-black text-stone-100 uppercase">{season.champion}</div>
+                      </div>
+                    </div>
+                    {season.tournamentData && (
+                      <button onClick={() => setSelectedSeasonDetails(season)} className="mt-2 w-full py-2 bg-[#050505] hover:bg-[#1a1a1a] text-stone-400 hover:text-yellow-500 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-colors border border-stone-800 flex items-center justify-center gap-2">
+                        <i className="fa-solid fa-folder-open"></i> Ver Placares
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderTournament = () => {
+        if (!dataLoaded) {
+           return (
+             <div className="flex flex-col items-center justify-center py-20 text-stone-500">
+                <i className="fa-solid fa-circle-notch fa-spin text-4xl text-yellow-500 mb-4"></i>
+                <h2 className="text-xl font-bold uppercase tracking-widest">Conectando ao Servidor...</h2>
+             </div>
+           );
+        }
+
+        if (phase === 'setup') {
+          if (!isOrganizer) {
+            return (
+              <div className="flex flex-col items-center justify-center py-16 text-stone-500 animate-in fade-in bg-[#0a0a0a] rounded-3xl border border-stone-800 shadow-xl max-w-2xl mx-auto text-center p-8">
+                <i className="fa-solid fa-clock-rotate-left text-4xl text-stone-600 mb-6"></i>
+                <h2 className="text-2xl font-black text-stone-300 uppercase tracking-wider mb-3">Aguardando Início</h2>
+                <p className="text-sm font-medium uppercase tracking-widest max-w-md mx-auto mb-8 leading-relaxed">
+                  A Copa BDT ainda está na fase de preparação. O organizador está a definir os jogadores e a sortear as equipas!
+                </p>
+                <button onClick={() => setShowLoginModal(true)} className="mt-4 bg-stone-800 hover:bg-stone-700 text-yellow-500 px-6 py-3 rounded-xl font-bold transition-all border border-stone-700 flex items-center gap-2">
+                  <i className="fa-solid fa-key"></i> Sou Organizador
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div className="animate-in fade-in">
+              <div className="max-w-4xl mx-auto bg-[#0a0a0a] rounded-3xl shadow-2xl border border-stone-800 overflow-hidden">
+                <div className="bg-[#121212] p-6 border-b border-stone-800">
+                  <div className="flex flex-col md:flex-row gap-4 mb-4">
+                    <div className="flex-1 w-full">
+                      <label className="text-xs font-bold text-yellow-600 uppercase tracking-widest mb-1 block">Nome do Campeonato</label>
+                      <input type="text" value={seasonName} onChange={(e) => setSeasonName(e.target.value)} className="bg-[#1a1a1a] border border-stone-700 rounded-lg px-4 py-3 text-white font-bold w-full focus:ring-2 focus:ring-yellow-600 outline-none" placeholder="Ex: Copa BDT Inverno" />
+                    </div>
+                    <div className="w-full md:w-64">
+                      <label className="text-xs font-bold text-yellow-600 uppercase tracking-widest mb-1 block">Modo de Jogo</label>
+                      <div className="relative">
+                         <select value={tournamentMode} onChange={(e) => setTournamentMode(e.target.value)} className="bg-[#1a1a1a] border border-stone-700 rounded-lg px-4 py-3 text-white font-bold w-full focus:ring-2 focus:ring-yellow-600 outline-none appearance-none cursor-pointer">
+                           <option value="clubes">Clube (Pontos Standard)</option>
+                           <option value="selecoes">Seleções (Pontos Dobrados)</option>
+                         </select>
+                         <i className="fa-solid fa-chevron-down absolute right-4 top-1/2 -translate-y-1/2 text-stone-500 pointer-events-none"></i>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 w-full mt-4 border-t border-stone-800 pt-4">
+                    <button onClick={handleRandomizeTeams} className="bg-stone-800 hover:bg-stone-700 text-yellow-500 px-4 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 flex-1 md:flex-none justify-center border border-stone-700"><i className="fa-solid fa-shuffle"></i> Sorteio de Times</button>
+                    <button onClick={handleAddTeam} className="bg-gradient-to-r from-yellow-600 to-yellow-500 text-black px-4 py-2.5 rounded-xl font-bold text-sm transition-all hover:brightness-110 flex items-center gap-2 flex-1 md:flex-none justify-center shadow-lg shadow-yellow-900/20"><i className="fa-solid fa-plus"></i> Jogador</button>
+                  </div>
+                </div>
+                <div className="p-6 space-y-3 max-h-[450px] overflow-y-auto custom-scrollbar bg-[#050505]">
+                  {teams.map((team, index) => (
+                    <div key={team.id} className="flex flex-col sm:flex-row items-center gap-3 bg-[#121212] p-3.5 rounded-2xl border border-stone-800 hover:border-yellow-900/50 transition-colors">
+                      <div className="w-10 h-10 rounded-full bg-yellow-600/10 text-yellow-500 flex items-center justify-center font-black shrink-0 border border-yellow-600/30">{index + 1}</div>
+                      <div className="flex-1 w-full">
+                        <label className="text-[10px] text-stone-500 font-bold uppercase tracking-widest ml-1 mb-1 block">Jogador</label>
+                        <input type="text" className="w-full bg-[#1a1a1a] border border-stone-700 rounded-lg px-4 py-2 text-white font-semibold focus:ring-2 focus:ring-yellow-600 outline-none transition-all placeholder-stone-600" value={team.playerName} onChange={(e) => handleTeamDataChange(index, 'playerName', e.target.value)} placeholder="Nome do Jogador" />
+                      </div>
+                      <div className="flex-1 w-full">
+                        <label className="text-[10px] text-stone-500 font-bold uppercase tracking-widest ml-1 mb-1 block">Equipa</label>
+                        <input type="text" className="w-full bg-[#1a1a1a] border border-stone-700 rounded-lg px-4 py-2 text-white font-semibold focus:ring-2 focus:ring-yellow-600 outline-none transition-all placeholder-stone-600" value={team.teamName} onChange={(e) => handleTeamDataChange(index, 'teamName', e.target.value)} placeholder="Equipa (Ex: Real Madrid)" />
+                      </div>
+                      <div className="sm:mt-5"><button onClick={() => handleRemoveTeam(team.id)} className="p-3 text-stone-500 hover:text-red-500 hover:bg-red-900/20 rounded-xl transition-colors"><i className="fa-solid fa-trash-can text-lg"></i></button></div>
+                    </div>
+                  ))}
+                </div>
+                <div className="p-6 bg-[#121212] border-t border-stone-800">
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
+                    <div className="flex items-center gap-2 text-stone-400 text-xs font-bold uppercase tracking-wide">
+                      {teams.length === 4 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 4 Jogadores (Grupos Ida/Volta | 6 Rodadas)</span>}
+                      {teams.length === 5 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 5 Jogadores (Suíço CPR | Top 4 Semi)</span>}
+                      {(teams.length === 6 || teams.length === 7) && <span><i className="fa-solid fa-shield text-orange-500 mr-1"></i> Formato: {teams.length} Jogadores (Suíço CPR | Top 2 Semi, Play-in 3º ao 6º)</span>}
+                      {teams.length === 8 && <span><i className="fa-solid fa-shield text-yellow-500 mr-1"></i> Formato: 8 Jogadores (2 Grupos de 4 com Semente | 3 Rodadas)</span>}
+                    </div>
+                  </div>
+                  <button onClick={handleStartTournament} className="w-full bg-gradient-to-r from-yellow-600 to-yellow-500 text-black hover:brightness-110 font-black py-5 rounded-2xl shadow-[0_0_20px_rgba(234,179,8,0.3)] transition-all flex items-center justify-center space-x-3 text-xl uppercase tracking-widest">
+                    <i className="fa-solid fa-play"></i><span>Dar o Pontapé Inicial</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="space-y-6 animate-in fade-in">
+            <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-stone-800 flex flex-col md:flex-row md:items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 to-yellow-600 flex items-center gap-2 uppercase tracking-wider"><i className="fa-solid fa-trophy text-yellow-500"></i> {seasonName || `Copa BDT`}</h1>
+                <p className="text-stone-400 text-sm font-semibold mt-1 uppercase tracking-widest">{phase === 'finished' ? 'Temporada Encerrada' : phase === 'playoffs' ? 'Fase Final (Mata-Mata)' : `Fase Inicial (Modo ${tournamentMode === 'selecoes' ? 'Seleções' : 'Clubes'}): Rodada ${currentRoundIndex + 1} de ${maxRounds}`}</p>
+              </div>
+              {phase === 'playing' && isOrganizer && (
+                <button onClick={advanceRound} disabled={!isCurrentRoundFinished()} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${isCurrentRoundFinished() ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
+                  <span>Avançar Etapa</span><i className="fa-solid fa-chevron-right"></i>
+                </button>
+              )}
+              {phase === 'playoffs' && playoffs?.stage === 'playin' && isOrganizer && (
+                <button onClick={advanceToSemis} disabled={!(getMatchupStatus(playoffs.playins[0]).isFinished && getMatchupStatus(playoffs.playins[1]).isFinished)} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${(getMatchupStatus(playoffs.playins[0]).isFinished && getMatchupStatus(playoffs.playins[1]).isFinished) ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
+                  <span>Ir para as Semifinais</span><i className="fa-solid fa-chevron-right"></i>
+                </button>
+              )}
+              {phase === 'playoffs' && playoffs?.stage === 'semifinals' && isOrganizer && (
+                <button onClick={advanceToFinal} disabled={!(getMatchupStatus(playoffs.semifinals[0]).isFinished && getMatchupStatus(playoffs.semifinals[1]).isFinished)} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${(getMatchupStatus(playoffs.semifinals[0]).isFinished && getMatchupStatus(playoffs.semifinals[1]).isFinished) ? 'bg-yellow-600 hover:bg-yellow-500 text-black border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.3)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
+                  <span>Ir para a Grande Final</span><i className="fa-solid fa-chevron-right"></i>
+                </button>
+              )}
+              {phase === 'playoffs' && playoffs?.stage === 'finals' && isOrganizer && (
+                <button onClick={finishTournament} disabled={!areFinalsFinished()} className={`mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 transition-all border ${areFinalsFinished() ? 'bg-gradient-to-r from-yellow-600 to-yellow-500 text-black border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.5)] cursor-pointer' : 'bg-[#1a1a1a] text-stone-600 border-stone-800 cursor-not-allowed'}`}>
+                  <span>Encerrar Campeonato</span><i className="fa-solid fa-trophy"></i>
+                </button>
+              )}
+              {phase === 'finished' && (
+                <div className="flex gap-3">
+                  <button onClick={() => setActiveTab('statistics')} className="mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 border border-yellow-500/30 transition-all"><i className="fa-solid fa-chart-line"></i><span>Estatísticas</span></button>
+                  {isOrganizer && (
+                    <button onClick={resetForNewSeason} className="mt-4 md:mt-0 py-3 px-6 rounded-xl font-bold flex items-center space-x-2 bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700 transition-all"><i className="fa-solid fa-rotate-right"></i><span>Novo Torneio</span></button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-7 space-y-6">
+                {phase === 'playing' && (
+                  <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-stone-800">
+                    <h2 className="text-xl font-black text-white mb-6 uppercase"><i className="fa-solid fa-play text-yellow-500 mr-2"></i> Rodada {currentRoundIndex + 1}</h2>
+                    <div className="space-y-4">
+                      {rounds[currentRoundIndex].matches.map((m, idx) => (
+                        <div key={m.id} className={`border rounded-xl p-4 md:p-6 transition-colors ${m.isBye ? 'bg-yellow-900/10 border-yellow-900/30' : 'bg-[#121212] border-stone-800'}`}>
+                          {m.isBye ? (
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                              <div className="flex items-center gap-3"><span className="bg-yellow-900/30 text-yellow-500 text-xs font-bold px-3 py-1.5 rounded-full border border-yellow-800/50">BYE / FOLGA</span><TeamDisplay id={m.team1} dark /></div>
+                              <span className="text-sm font-semibold text-stone-400 bg-[#1a1a1a] px-3 py-1 rounded-lg border border-stone-800">Vitória Automática (+3 PTS)</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between gap-2 md:gap-4">
+                              <div className="flex-1 w-0"><TeamDisplay id={m.team1} align="right" dark /></div>
+                              <div className="flex items-center gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800 shrink-0 shadow-inner">
+                                <input type="number" disabled={!isOrganizer} min="0" value={m.score1} onChange={(e) => handleSwissScoreChange(currentRoundIndex, idx, 'score1', e.target.value)} className="w-12 md:w-14 h-12 text-center text-xl font-black bg-[#1a1a1a] text-white border border-stone-700 rounded-md focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <span className="font-bold text-stone-600 text-sm">X</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={m.score2} onChange={(e) => handleSwissScoreChange(currentRoundIndex, idx, 'score2', e.target.value)} className="w-12 md:w-14 h-12 text-center text-xl font-black bg-[#1a1a1a] text-white border border-stone-700 rounded-md focus:ring-2 focus:ring-yellow-500 outline-none" />
+                              </div>
+                              <div className="flex-1 w-0"><TeamDisplay id={m.team2} align="left" dark /></div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {phase === 'playoffs' && playoffs?.stage === 'playin' && (
+                  <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-orange-900/30">
+                    <h2 className="text-xl font-black text-white mb-6 uppercase"><i className="fa-solid fa-circle-exclamation text-orange-500 mr-2"></i> Play-in (Ida e Volta)</h2>
+                    <div className="grid md:grid-cols-2 gap-6">
+                      {playoffs.playins.map((match, idx) => {
+                        const status = getMatchupStatus(match);
+                        return (
+                          <div key={idx} className="border border-stone-800 rounded-xl p-5 bg-[#121212] flex flex-col relative overflow-hidden">
+                            {status.isFinished && <div className="absolute inset-0 bg-orange-900/10 pointer-events-none"></div>}
+                            <div className="flex justify-between items-center mb-5 pb-3 border-b border-stone-800">
+                              <h3 className="font-bold text-stone-300">{idx === 0 ? '3º vs 6º' : '4º vs 5º'}</h3>
+                              {status.isFinished && <span className="bg-orange-900/30 border border-orange-800/50 text-orange-400 text-[10px] font-bold px-2 py-1 rounded-full uppercase shadow-sm">Avançou: {getTeamInfo(status.winner).playerName}</span>}
+                            </div>
+                            <div className="flex justify-between items-start mb-6 gap-2">
+                              <div className="w-[45%]"><TeamDisplay id={match.team1} align="center" dark /></div>
+                              <div className="text-stone-600 font-bold text-xl mt-2">VS</div>
+                              <div className="w-[45%]"><TeamDisplay id={match.team2} align="center" dark /></div>
+                            </div>
+                            <div className="space-y-3 mt-auto">
+                              <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
+                                <span className="text-xs font-bold text-stone-500 w-12">IDA</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s1} onChange={e => handlePlayoffScore('playins', idx, 'leg1', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                <span className="text-stone-600 text-xs">x</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s2} onChange={e => handlePlayoffScore('playins', idx, 'leg1', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                              </div>
+                              <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
+                                <span className="text-xs font-bold text-stone-500 w-12">VOLTA</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s1} onChange={e => handlePlayoffScore('playins', idx, 'leg2', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                <span className="text-stone-600 text-xs">x</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s2} onChange={e => handlePlayoffScore('playins', idx, 'leg2', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                              </div>
+                              {status.isTied && (
+                                <div className="mt-2 pt-2 border-t border-orange-900/30">
+                                  <div className="flex items-center justify-between gap-2 bg-orange-900/10 p-2 rounded-lg border border-orange-800/30">
+                                    <span className="text-xs font-bold text-orange-600 w-12">PÊN</span>
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s1} onChange={e => handlePlayoffScore('playins', idx, 'pen', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-orange-700/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                    <span className="text-orange-700 text-xs">x</span>
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s2} onChange={e => handlePlayoffScore('playins', idx, 'pen', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-orange-700/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-orange-500 outline-none" />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {phase === 'playoffs' && playoffs?.stage === 'semifinals' && (
+                  <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-stone-800">
+                    <h2 className="text-xl font-black text-white mb-6 uppercase"><i className="fa-solid fa-trophy text-yellow-500 mr-2"></i> Semifinais (Ida e Volta)</h2>
+                    <div className="grid md:grid-cols-2 gap-6">
+                      {playoffs.semifinals.map((match, idx) => {
+                        const status = getMatchupStatus(match);
+                        return (
+                          <div key={idx} className="border border-stone-800 rounded-xl p-5 bg-[#121212] flex flex-col relative overflow-hidden">
+                            {status.isFinished && <div className="absolute inset-0 bg-yellow-900/5 pointer-events-none"></div>}
+                            <div className="flex justify-between items-center mb-5 pb-3 border-b border-stone-800">
+                              <h3 className="font-bold text-stone-300">Semifinal {idx + 1}</h3>
+                              {status.isFinished && <span className="bg-yellow-900/20 border border-yellow-700/30 text-yellow-500 text-[10px] font-bold px-2 py-1 rounded-full uppercase shadow-sm">Avançou: {getTeamInfo(status.winner).playerName}</span>}
+                            </div>
+                            <div className="flex justify-between items-start mb-6 gap-2">
+                              <div className="w-[45%]"><TeamDisplay id={match.team1} align="center" dark /></div>
+                              <div className="text-stone-600 font-bold text-xl mt-2">VS</div>
+                              <div className="w-[45%]"><TeamDisplay id={match.team2} align="center" dark /></div>
+                            </div>
+                            <div className="space-y-3 mt-auto">
+                              <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
+                                <span className="text-xs font-bold text-stone-500 w-12">IDA</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'leg1', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <span className="text-stone-600 text-xs">x</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg1.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'leg1', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                              </div>
+                              <div className="flex items-center justify-between gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800">
+                                <span className="text-xs font-bold text-stone-500 w-12">VOLTA</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'leg2', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                <span className="text-stone-600 text-xs">x</span>
+                                <input type="number" disabled={!isOrganizer} min="0" value={match.leg2.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'leg2', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-stone-700 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                              </div>
+                              {status.isTied && (
+                                <div className="mt-2 pt-2 border-t border-yellow-900/30">
+                                  <div className="flex items-center justify-between gap-2 bg-yellow-900/10 p-2 rounded-lg border border-yellow-700/30">
+                                    <span className="text-xs font-bold text-yellow-600 w-12">PÊN</span>
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s1} onChange={e => handlePlayoffScore('semifinals', idx, 'pen', 's1', e.target.value)} className="w-12 p-1 text-center font-bold border border-yellow-600/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                    <span className="text-yellow-700 text-xs">x</span>
+                                    <input type="number" disabled={!isOrganizer} min="0" value={match.pen.s2} onChange={e => handlePlayoffScore('semifinals', idx, 'pen', 's2', e.target.value)} className="w-12 p-1 text-center font-bold border border-yellow-600/50 rounded bg-[#1a1a1a] text-white focus:ring-2 focus:ring-yellow-500 outline-none" />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {phase === 'playoffs' && playoffs?.stage === 'finals' && (
+                  <div className="space-y-6">
+                    <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-[0_0_40px_rgba(234,179,8,0.15)] border border-yellow-600/50 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-yellow-700 via-yellow-400 to-yellow-700"></div>
+                      <h2 className="text-xl font-black text-yellow-500 mb-6 flex items-center justify-center gap-2 uppercase tracking-widest"><i className="fa-solid fa-star"></i> Grande Final <i className="fa-solid fa-star"></i></h2>
+                      <div className="max-w-xl mx-auto relative z-10">
+                        <div className="flex justify-between items-center mb-6 gap-4">
+                          <div className="flex-1 bg-[#121212] p-4 rounded-xl border border-stone-800"><TeamDisplay id={playoffs.final.team1} align="center" dark /></div>
+                          <div className="text-stone-700 font-bold text-3xl">VS</div>
+                          <div className="flex-1 bg-[#121212] p-4 rounded-xl border border-stone-800"><TeamDisplay id={playoffs.final.team2} align="center" dark /></div>
+                        </div>
+                        <div className="flex items-center justify-center gap-4 bg-[#050505] p-4 rounded-xl border border-stone-800 shadow-inner max-w-sm mx-auto">
+                          <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.leg1.s1} onChange={e => handlePlayoffScore('final', null, 'leg1', 's1', e.target.value)} className="w-20 h-16 text-3xl text-center font-black border border-stone-700 bg-[#1a1a1a] text-white rounded-lg focus:ring-2 focus:ring-yellow-500 outline-none" />
+                          <span className="text-stone-600 font-bold text-xl">X</span>
+                          <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.leg1.s2} onChange={e => handlePlayoffScore('final', null, 'leg1', 's2', e.target.value)} className="w-20 h-16 text-3xl text-center font-black border border-stone-700 bg-[#1a1a1a] text-white rounded-lg focus:ring-2 focus:ring-yellow-500 outline-none" />
+                        </div>
+                        {getMatchupStatus(playoffs.final).isTied && (
+                          <div className="mt-4 max-w-sm mx-auto bg-yellow-900/10 p-4 rounded-xl border border-yellow-700/30">
+                            <p className="text-center text-xs text-yellow-500 font-bold mb-2 uppercase">Pênaltis</p>
+                            <div className="flex items-center justify-center gap-4">
+                              <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.pen.s1} onChange={e => handlePlayoffScore('final', null, 'pen', 's1', e.target.value)} className="w-16 h-12 text-xl text-center font-bold border border-yellow-600/50 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-yellow-500 outline-none" />
+                              <span className="text-yellow-700 font-bold">X</span>
+                              <input type="number" disabled={!isOrganizer} min="0" value={playoffs.final.pen.s2} onChange={e => handlePlayoffScore('final', null, 'pen', 's2', e.target.value)} className="w-16 h-12 text-xl text-center font-bold border border-yellow-600/50 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-yellow-500 outline-none" />
+                            </div>
+                          </div>
+                        )}
+                        {getMatchupStatus(playoffs.final).isFinished && (
+                          <div className="mt-8 text-center">
+                            <div className="inline-block relative">
+                              <div className="absolute inset-0 bg-yellow-500 blur-xl opacity-20 rounded-full"></div>
+                              <span className="relative bg-gradient-to-r from-yellow-600 to-yellow-500 text-black font-black px-8 py-3 rounded-full text-xl shadow-[0_0_20px_rgba(234,179,8,0.4)] border border-yellow-300 uppercase tracking-widest flex items-center gap-3">
+                                <i className="fa-solid fa-trophy"></i> {getTeamInfo(getMatchupStatus(playoffs.final).winner).playerName}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-[#0a0a0a] p-6 rounded-2xl shadow-xl border border-stone-800">
+                      <h2 className="text-sm font-bold text-stone-500 mb-6 flex items-center justify-center uppercase tracking-widest">Disputa de 3º Lugar</h2>
+                      <div className="max-w-xl mx-auto">
+                        <div className="flex justify-between items-center mb-4 gap-4">
+                          <div className="flex-1"><TeamDisplay id={playoffs.thirdPlace.team1} align="right" dark /></div>
+                          <div className="flex items-center gap-2 bg-[#050505] p-2 rounded-lg border border-stone-800 shrink-0 shadow-inner">
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.leg1.s1} onChange={e => handlePlayoffScore('thirdPlace', null, 'leg1', 's1', e.target.value)} className="w-12 h-12 text-center text-xl font-bold border border-stone-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                            <span className="font-bold text-stone-600 text-sm">X</span>
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.leg1.s2} onChange={e => handlePlayoffScore('thirdPlace', null, 'leg1', 's2', e.target.value)} className="w-12 h-12 text-center text-xl font-bold border border-stone-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                          </div>
+                          <div className="flex-1"><TeamDisplay id={playoffs.thirdPlace.team2} align="left" dark /></div>
+                        </div>
+                        {getMatchupStatus(playoffs.thirdPlace).isTied && (
+                          <div className="mt-3 flex justify-center items-center gap-3 bg-orange-900/10 py-2 px-4 rounded-lg border border-orange-800/30 w-max mx-auto">
+                            <span className="text-xs font-bold text-orange-500 uppercase">Pênaltis:</span>
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.pen.s1} onChange={e => handlePlayoffScore('thirdPlace', null, 'pen', 's1', e.target.value)} className="w-10 h-8 text-center text-sm font-bold border border-orange-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                            <span className="text-orange-700 text-xs">x</span>
+                            <input type="number" disabled={!isOrganizer} min="0" value={playoffs.thirdPlace.pen.s2} onChange={e => handlePlayoffScore('thirdPlace', null, 'pen', 's2', e.target.value)} className="w-10 h-8 text-center text-sm font-bold border border-orange-700 bg-[#1a1a1a] text-white rounded focus:ring-2 focus:ring-orange-500 outline-none" />
+                          </div>
+                        )}
+                        {getMatchupStatus(playoffs.thirdPlace).isFinished && (
+                          <div className="mt-4 text-center">
+                            <span className="text-orange-500 font-bold text-sm bg-orange-900/20 px-4 py-1.5 rounded-full border border-orange-800/30">3º Colocado: {getTeamInfo(getMatchupStatus(playoffs.thirdPlace).winner).playerName}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {phase !== 'finished' && (
+                <div className="lg:col-span-5">
+                  {tournamentFormat === '8_teams' ? (
+                    <div className="space-y-4">
+                      <StandingsTableUI title="Grupo A" data={standingsA} />
+                      <StandingsTableUI title="Grupo B" data={standingsB} />
+                    </div>
+                  ) : (
+                    <StandingsTableUI title={`Tabela - ${seasonName}`} data={standings} />
+                  )}
+                </div>
+              )}
+
+              {/* TELA: ENCERRADO */}
+              {phase === 'finished' && (
+                <div className="lg:col-span-12">
+                  <div className="bg-[#0a0a0a] p-8 rounded-3xl shadow-2xl border border-stone-800 text-center relative overflow-hidden">
+                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-yellow-900/20 via-transparent to-transparent"></div>
+                    <i className="fa-solid fa-trophy text-[100px] text-yellow-500 mx-auto mb-6 drop-shadow-[0_0_30px_rgba(234,179,8,0.4)] relative z-10 block"></i>
+                    <h2 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 via-yellow-500 to-yellow-200 mb-2 uppercase tracking-tighter relative z-10">O Campeão foi coroado!</h2>
+                    <p className="text-stone-400 font-medium mb-12 tracking-widest uppercase text-sm relative z-10">Verifique as Estatísticas para ver as posições completas.</p>
+                    
+                    <div className="flex flex-col md:flex-row justify-center items-end gap-4 md:gap-2 max-w-3xl mx-auto mt-16 relative z-10 h-64">
+                      <div className="order-2 md:order-1 w-full md:w-1/3 flex flex-col items-center">
+                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs.final).loser} align="center" dark /></div>
+                        <div className="bg-gradient-to-b from-stone-300 to-stone-500 w-full rounded-t-lg h-32 flex flex-col items-center justify-start pt-4 border border-stone-400/50 shadow-lg relative">
+                          <span className="text-4xl font-black text-stone-800 opacity-50">2</span>
+                          <div className="absolute -top-3 text-[10px] font-black bg-stone-900 text-white px-2 py-1 rounded shadow-md border border-stone-700">🥈 VICE</div>
+                        </div>
+                      </div>
+                      <div className="order-1 md:order-2 w-full md:w-2/5 flex flex-col items-center">
+                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs.final).winner} align="center" dark /></div>
+                        <div className="bg-gradient-to-b from-yellow-400 via-yellow-500 to-yellow-600 w-full rounded-t-lg h-48 flex flex-col items-center justify-start pt-6 border-2 border-yellow-300 shadow-[0_0_30px_rgba(234,179,8,0.3)] relative z-20">
+                          <span className="text-6xl font-black text-yellow-900 opacity-60">1</span>
+                          <div className="absolute -top-4 text-xs font-black bg-stone-900 text-yellow-500 px-3 py-1 rounded shadow-md border border-stone-700">🏆 CAMPEÃO</div>
+                        </div>
+                      </div>
+                      <div className="order-3 md:order-3 w-full md:w-1/3 flex flex-col items-center">
+                        <div className="mb-4"><TeamDisplay id={getMatchupStatus(playoffs.thirdPlace).winner} align="center" dark /></div>
+                        <div className="bg-gradient-to-b from-orange-500 to-orange-700 w-full rounded-t-lg h-24 flex flex-col items-center justify-start pt-2 border border-orange-400/50 shadow-lg relative">
+                          <span className="text-3xl font-black text-orange-950 opacity-50">3</span>
+                          <div className="absolute -top-3 text-[10px] font-black bg-stone-900 text-orange-500 px-2 py-1 rounded shadow-md border border-stone-700">🥉 3º LUGAR</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      // --- RENDERS ---
+      return (
+        <div className="min-h-screen bg-[#000000] text-stone-200 font-sans relative pt-6 pb-12">
+          <input type="file" ref={logoInputRef} style={{ display: 'none' }} accept="image/*" onChange={handleLogoUpload} />
+          
+          <NavHeader />
+
+          <div className="max-w-7xl mx-auto relative z-10 px-4 sm:px-6 lg:px-8">
+            {activeTab === 'statistics' && renderStatistics()}
+            {activeTab === 'ranking' && renderRanking()}
+            {activeTab === 'tournament' && renderTournament()}
+          </div>
+
+          {renderModals()}
+          
+          <footer className="mt-16 pb-4 text-center relative z-10">
+            <p className="text-[10px] text-stone-600 font-bold uppercase tracking-widest flex items-center justify-center gap-2">
+              <i className="fa-solid fa-shield-halved"></i> Organizado e realizado pela CPR <i className="fa-solid fa-shield-halved"></i>
+            </p>
+          </footer>
+
+          <div className="fixed top-[-10000px] left-[-10000px] pointer-events-none z-[-1]">
+            <div id="premium-export-node" ref={exportRef} style={{ width: '1080px', height: '1350px', backgroundColor: '#050505', backgroundImage: 'radial-gradient(circle at top left, rgba(202,138,4,0.1) 0%, rgba(0,0,0,0) 60%)', color: '#ffffff', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '100px 80px', display: 'none', flexDirection: 'column', position: 'relative', overflow: 'hidden', boxSizing: 'border-box' }}>
+              
+              {/* Marca d'água central */}
+              <div style={{ position: 'absolute', left: '50%', top: '55%', transform: 'translate(-50%, -50%)', zIndex: 1, opacity: 0.05, width: '800px', display: 'flex', justifyContent: 'center' }}>
+                <img src={customLogo} style={{ width: '100%', height: 'auto', objectFit: 'contain', filter: 'grayscale(100%)' }} onError={(e) => e.target.style.display = 'none'} />
+              </div>
+
+              <div style={{ zIndex: 10, position: 'relative', width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+                
+                {/* Header */}
+                <div style={{ marginBottom: '60px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
+                  <div>
+                    <h1 style={{ fontSize: '85px', fontWeight: 900, margin: 0, lineHeight: 1.1, letterSpacing: '-1px', color: '#facc15', textShadow: '0 4px 10px rgba(202,138,4,0.3)' }}>HALL DA FAMA<br />COPA BDT</h1>
+                    <p style={{ fontSize: '26px', color: '#a8a29e', margin: '20px 0 0 0', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '2px' }}>Ranking Oficial - Bonde do Tigrão</p>
+                  </div>
+                  <div>
+                     <img src={customLogo} style={{ width: '160px', height: '160px', objectFit: 'contain', backgroundColor: 'transparent' }} onError={(e) => { e.target.onerror=null; e.target.style.display='none'; }} />
+                  </div>
+                </div>
+
+                {/* Tabela de Classificação - Apenas Top 5 */}
+                <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', marginTop: '10px', flexGrow: 1 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                      <th style={{ width: '12%', paddingBottom: '20px', fontSize: '22px', color: '#78716c', fontWeight: 'bold', textAlign: 'center', textTransform: 'uppercase', letterSpacing: '1px' }}>Pos</th>
+                      <th style={{ paddingBottom: '20px', paddingLeft: '30px', fontSize: '22px', color: '#78716c', fontWeight: 'bold', textAlign: 'left', textTransform: 'uppercase', letterSpacing: '1px' }}>Jogador</th>
+                      <th style={{ width: '20%', paddingBottom: '20px', fontSize: '22px', color: '#78716c', fontWeight: 'bold', textAlign: 'center', textTransform: 'uppercase', letterSpacing: '1px' }}>Títulos</th>
+                      <th style={{ width: '20%', paddingBottom: '20px', fontSize: '22px', color: '#facc15', fontWeight: 'bold', textAlign: 'center', textTransform: 'uppercase', letterSpacing: '1px' }}>Pontos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedGlobalRanking.slice(0, 5).map((player, idx) => {
+                      let numColor = '#78716c';
+                      if (idx === 0) numColor = '#facc15';
+                      else if (idx === 1) numColor = '#ffffff';
+                      else if (idx === 2) numColor = '#f97316';
+                      
+                      return (
+                        <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                          <td style={{ width: '12%', padding: '45px 0', fontSize: '56px', fontWeight: 900, color: numColor, textAlign: 'center' }}>{idx + 1}º</td>
+                          <td style={{ padding: '45px 0 45px 30px', fontSize: '52px', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.5px', textAlign: 'left' }}>{player.name}</td>
+                          <td style={{ width: '20%', padding: '45px 0', fontSize: '52px', fontWeight: 800, color: '#a8a29e', textAlign: 'center' }}>{player.titles}</td>
+                          <td style={{ width: '20%', padding: '45px 0', fontSize: '52px', fontWeight: 900, color: '#facc15', textAlign: 'center' }}>{player.pts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {/* Rodapé */}
+                <div style={{ marginTop: '50px', width: '100%', textAlign: 'center', paddingBottom: '20px' }}>
+                  <span style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '8px', color: '#57534e', textTransform: 'uppercase' }}>Copa BDT Oficial</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
